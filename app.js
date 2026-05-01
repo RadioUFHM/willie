@@ -212,7 +212,7 @@ async function loadPrecomputedBrief() {
     const generatedAt = new Date(rows[1]?.[0] || brief.generatedAt);
     const ageHours = (Date.now() - generatedAt) / 3600000;
     if (ageHours < 20) {
-      S.briefData = brief;
+      S.briefData = injectCalendarLinks(brief);
       S.briefSource = 'precomputed';
     }
   } catch (e) { console.error('loadPrecomputedBrief:', e); }
@@ -389,7 +389,9 @@ Return ONLY valid JSON, no markdown fences, no other text:
 Limits: calendar max 3, email max 4, actions max 3, bd exactly 1.
 analysis fields: 1-2 sentences max. Punchy. Tell Rio what to DO.
 priority: high = act now, medium = today, low = be aware.
-Empty array if a section has nothing urgent — never pad.`;
+Empty array if a section has nothing urgent — never pad.
+For calendar items: set link to the meetLink if present (prefer it — lets Rio join the call), else calLink. Both are in the calendar context above.
+For email items: set link to the gmail thread link provided in the context.`;
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -425,8 +427,8 @@ Empty array if a section has nothing urgent — never pad.`;
       return;
     }
 
-    S.briefData = brief;
-    area.innerHTML = renderBrief(brief);
+    S.briefData = injectCalendarLinks(brief);
+    area.innerHTML = renderBrief(S.briefData);
   } catch (err) {
     area.innerHTML = `<div class="brief-thinking">Willie couldn't connect: ${esc(err.message)}</div>`;
     console.error(err);
@@ -434,6 +436,20 @@ Empty array if a section has nothing urgent — never pad.`;
     btn.disabled = false;
     btn.innerHTML = '✦ Ask Willie';
   }
+}
+
+function injectCalendarLinks(brief) {
+  if (!brief?.calendar?.length || !S.calendar.length) return brief;
+  brief.calendar = brief.calendar.map(item => {
+    if (item.link) return item;
+    const match = S.calendar.find(ev => {
+      const a = ev.title.toLowerCase(), b = (item.title || '').toLowerCase();
+      return a.includes(b.slice(0, 10)) || b.includes(a.slice(0, 10));
+    });
+    if (match) item.link = match.meetLink || match.calLink || '';
+    return item;
+  });
+  return brief;
 }
 
 function renderBrief(brief) {

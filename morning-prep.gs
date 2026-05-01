@@ -50,14 +50,19 @@ function getTodaysEvents() {
   const today = new Date();
   return CalendarApp.getDefaultCalendar()
     .getEventsForDay(today)
-    .map(ev => ({
-      title:     ev.getTitle(),
-      start:     ev.getStartTime().toISOString(),
-      allDay:    ev.isAllDayEvent(),
-      attendees: ev.getGuestList().map(g => g.getName() || g.getEmail()),
-      meetLink:  ev.getLocation() || '',
-      notes:     (ev.getDescription() || '').slice(0, 500),
-    }));
+    .map(ev => {
+      const desc = ev.getDescription() || '';
+      const meetMatch = desc.match(/https:\/\/meet\.google\.com\/[\w-]+/);
+      const meetLink = meetMatch ? meetMatch[0] : (ev.getLocation() || '');
+      return {
+        title:     ev.getTitle(),
+        start:     ev.getStartTime().toISOString(),
+        allDay:    ev.isAllDayEvent(),
+        attendees: ev.getGuestList().map(g => g.getName() || g.getEmail()),
+        link:      meetLink,
+        notes:     desc.slice(0, 300),
+      };
+    });
 }
 
 // ── Sheets ────────────────────────────────────────────────────────────────────
@@ -124,7 +129,9 @@ Return this exact structure:
 Limits: calendar ≤3, email ≤4, actions ≤3, bd exactly 1.
 analysis: 1–2 punchy sentences. Tell Rio what to DO.
 priority: high=act now, medium=today, low=be aware.
-Empty array [] if a section has nothing urgent — never pad.`;
+Empty array [] if a section has nothing urgent — never pad.
+For calendar link: copy the event's link field exactly as provided — it is the Google Meet URL.
+For email link: copy the email's link field exactly as provided — it is the Gmail thread URL.`;
 
   const resp = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
