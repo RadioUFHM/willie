@@ -1,4 +1,4 @@
-const CACHE = 'willie-v1';
+const CACHE = 'willie-v2';
 const PRECACHE = ['./', './index.html', './app.js', './style.css', './manifest.json'];
 
 self.addEventListener('install', e => {
