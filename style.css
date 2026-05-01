@@ -617,7 +617,7 @@ nav {
 .brief-section:last-child { margin-bottom: 0; }
 
 .brief-section-head {
-  font-size: 10px;
+  font-size: 20px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
