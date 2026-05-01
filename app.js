@@ -199,9 +199,23 @@ async function loadContextDoc() {
 // ── Load all ──────────────────────────────────────────────────────────────────
 async function loadAll() {
   await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
-  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc()]);
+  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief()]);
   renderView();
-  if (S.view === 'home') askWillie();
+}
+
+async function loadPrecomputedBrief() {
+  try {
+    const d = await shGet('WillieBrief!A1:A2');
+    const rows = d.values || [];
+    if (!rows[0]?.[0]) return;
+    const brief = JSON.parse(rows[0][0]);
+    const generatedAt = new Date(rows[1]?.[0] || brief.generatedAt);
+    const ageHours = (Date.now() - generatedAt) / 3600000;
+    if (ageHours < 20) {
+      S.briefData = brief;
+      S.briefSource = 'precomputed';
+    }
+  } catch (e) { console.error('loadPrecomputedBrief:', e); }
 }
 
 // ── Sheet loaders ─────────────────────────────────────────────────────────────
@@ -336,7 +350,7 @@ async function askWillie() {
     [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`),
      ...opfDue.map(e => `  [OPF] ${e.task}`),
      ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`),
-    ].length ? [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`), ...opfDue.map(e => `  [OPF] ${e.task}`)]
+    ].length ? [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`), ...opfDue.map(e => `  [OPF] ${e.task}`), ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`)]
              : ['  None.'],
   ].flat().join('\n');
 
@@ -482,9 +496,14 @@ function homeHTML() {
 
   return `
     <div class="home-header">
-      <div class="greeting">${greeting()}</div>
-      <div class="greeting-name">Rio.</div>
-      <div class="greeting-date">${fullDate()}</div>
+      <div class="home-header-row">
+        <div>
+          <div class="greeting">${greeting()}</div>
+          <div class="greeting-name">Rio.</div>
+          <div class="greeting-date">${fullDate()}</div>
+        </div>
+        ${S.token ? `<button class="btn-icon" id="home-refresh" title="Refresh">↻</button>` : ''}
+      </div>
     </div>
 
     <div class="stat-row">
@@ -504,8 +523,11 @@ function homeHTML() {
 
     ${!S.token ? authBanner() : ''}
 
-    <button class="willie-btn" id="wb" onclick="askWillie()">✦ Ask Willie</button>
-    <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>${S.briefData ? renderBrief(S.briefData) : ''}</div>
+    <button class="willie-btn" id="wb" onclick="askWillie()">✦ ${S.briefSource === 'precomputed' ? 'Refresh Brief' : 'Ask Willie'}</button>
+    <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>
+      ${S.briefData && S.briefSource === 'precomputed' ? `<div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">✦ Ready at ${new Date(S.briefData.generatedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>` : ''}
+      ${S.briefData ? renderBrief(S.briefData) : ''}
+    </div>
 
     <div class="section">
       <div class="section-title">Today · ${S.calendar.length} event${S.calendar.length !== 1 ? 's' : ''}</div>
@@ -574,7 +596,16 @@ function authBanner() {
 // ── FCIT view ─────────────────────────────────────────────────────────────────
 function fcitHTML() {
   const f = S.filter.fcit;
-  const items = S.fcit.filter(e => f === 'all' || e.stage === f);
+  const t = todays();
+  const stagePri = {proposal:0, warm:1, prospect:2, closed:3};
+  const items = S.fcit
+    .filter(e => f === 'all' || e.stage === f)
+    .sort((a, b) => {
+      const aUrgent = a.dueDate && a.dueDate <= t ? 0 : 1;
+      const bUrgent = b.dueDate && b.dueDate <= t ? 0 : 1;
+      if (aUrgent !== bUrgent) return aUrgent - bUrgent;
+      return (stagePri[a.stage]??4) - (stagePri[b.stage]??4);
+    });
   return `
     <div class="page-header">
       <div class="page-title">FCIT</div>
@@ -598,6 +629,7 @@ function fcitHTML() {
             ${e.org ? `<div class="card-sub">${esc(e.org)}</div>` : ''}
             ${e.nextAction ? `<div class="card-action">${esc(e.nextAction)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
+            ${e.stage !== 'closed' ? `<div class="card-quick"><button class="quick-btn" data-contacted="${e.ri}">✓ Contacted</button></div>` : ''}
           </div>`).join('')}
     </div>`;
 }
@@ -605,7 +637,18 @@ function fcitHTML() {
 // ── OPF view ──────────────────────────────────────────────────────────────────
 function opfHTML() {
   const f = S.filter.opf;
-  const items = S.opf.filter(e => f === 'all' || e.status === f);
+  const statusPri = {todo:0,'in-progress':1,blocked:2,done:3};
+  const priorityPri = {high:0,medium:1,low:2};
+  const items = S.opf
+    .filter(e => f === 'all' || e.status === f)
+    .sort((a, b) => {
+      const sd = (statusPri[a.status]??4) - (statusPri[b.status]??4);
+      if (sd) return sd;
+      const pd = (priorityPri[a.priority]??3) - (priorityPri[b.priority]??3);
+      if (pd) return pd;
+      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      return a.dueDate ? -1 : b.dueDate ? 1 : 0;
+    });
   return `
     <div class="page-header">
       <div class="page-title">OPF</div>
@@ -631,6 +674,7 @@ function opfHTML() {
             </div>
             ${e.category ? `<div class="card-sub">${esc(e.category)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
+            ${e.status !== 'done' ? `<div class="card-quick"><button class="quick-btn done-btn" data-done-row="${e.ri}">✓ Done</button></div>` : ''}
           </div>`).join('')}
     </div>`;
 }
@@ -638,7 +682,18 @@ function opfHTML() {
 // ── Creative view ─────────────────────────────────────────────────────────────
 function creativeHTML() {
   const f = S.filter.creative;
-  const items = S.creative.filter(e => f === 'all' || e.project === f);
+  const statusPri = {todo:0,'in-progress':1,blocked:2,done:3};
+  const priorityPri = {high:0,medium:1,low:2};
+  const items = S.creative
+    .filter(e => f === 'all' || e.project === f)
+    .sort((a, b) => {
+      const sd = (statusPri[a.status]??4) - (statusPri[b.status]??4);
+      if (sd) return sd;
+      const pd = (priorityPri[a.priority]??3) - (priorityPri[b.priority]??3);
+      if (pd) return pd;
+      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      return a.dueDate ? -1 : b.dueDate ? 1 : 0;
+    });
   return `
     <div class="page-header">
       <div class="page-title">Creative</div>
@@ -664,6 +719,7 @@ function creativeHTML() {
               <span class="badge badge-${e.status}">${e.status}</span>
             </div>
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
+            ${e.status !== 'done' ? `<div class="card-quick"><button class="quick-btn done-btn" data-done-row="${e.ri}">✓ Done</button></div>` : ''}
           </div>`).join('')}
     </div>`;
 }
@@ -707,6 +763,51 @@ function bindViewEvents() {
   if (addOpf) addOpf.addEventListener('click', () => openOPF(null));
   const addCreative = document.getElementById('add-creative');
   if (addCreative) addCreative.addEventListener('click', () => openCreative(null));
+
+  const homeRefresh = document.getElementById('home-refresh');
+  if (homeRefresh) homeRefresh.addEventListener('click', () => { loadAll(); toast('Refreshing...'); });
+
+  document.querySelectorAll('[data-contacted]').forEach(btn => {
+    btn.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const ri = parseInt(btn.dataset.contacted, 10);
+      await markContacted(ri);
+    });
+  });
+
+  document.querySelectorAll('[data-done-row]').forEach(btn => {
+    btn.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const ri = parseInt(btn.dataset.doneRow, 10);
+      await markTaskDone(v === 'opf' ? 'opf' : 'creative', ri);
+    });
+  });
+}
+
+// ── Quick actions ─────────────────────────────────────────────────────────────
+async function markContacted(ri) {
+  const e = S.fcit.find(x => x.ri === ri);
+  if (!e) return;
+  if (!S.token) { toast('Connect Google to save'); return; }
+  try { await saveFCIT({...e, lastContact: todays()}, false); renderView(); toast('Marked contacted'); }
+  catch (err) { toast('Failed: ' + err.message); }
+}
+
+async function markTaskDone(view, ri) {
+  if (!S.token) { toast('Connect Google to save'); return; }
+  try {
+    if (view === 'opf') {
+      const e = S.opf.find(x => x.ri === ri);
+      if (!e) return;
+      await saveOPF({...e, status:'done'}, false);
+    } else {
+      const e = S.creative.find(x => x.ri === ri);
+      if (!e) return;
+      await saveCreative({...e, status:'done'}, false);
+    }
+    renderView();
+    toast('Done');
+  } catch (err) { toast('Failed: ' + err.message); }
 }
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
@@ -926,5 +1027,5 @@ window.addEventListener('load', () => {
   }
   renderView();
   initAuth();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
+  if ('serviceWorker' in navigator && location.hostname !== 'localhost') navigator.serviceWorker.register('./sw.js').catch(console.error);
 });
