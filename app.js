@@ -18,7 +18,7 @@ const S = {
   contextDoc: '',
   briefData: null,
   chatHistory: [],
-  news: { regulatory: [], crypto: [], ethPrice: null },
+  news: { ethPrice: null },
   filter: { fcit: 'all', opf: 'all', creative: 'all' },
 };
 
@@ -199,64 +199,20 @@ async function loadContextDoc() {
 }
 
 // ── News ──────────────────────────────────────────────────────────────────────
-async function loadNews() {
-  const [regulatory, crypto, ethPrice] = await Promise.all([
-    loadRegulatoryNews(),
-    loadCryptoNews(),
-    loadEthPrice(),
-  ]);
-  S.news = { regulatory, crypto, ethPrice };
-}
-
-async function fetchRSS(feedUrl, source, max = 4) {
-  const api = `https://api.rss2json.com/v1/api.json?rss_url=${enc(feedUrl)}&count=${max}`;
-  const r = await fetch(api);
-  const d = await r.json();
-  if (d.status !== 'ok') throw new Error(`rss2json error: ${d.message}`);
-  return (d.items || []).map(item => ({
-    title: item.title?.trim() || '',
-    link:  item.link || '',
-    source,
-  })).filter(i => i.title);
-}
-
-async function loadRegulatoryNews() {
-  try {
-    const [sec, doj] = await Promise.allSettled([
-      fetchRSS('https://www.sec.gov/rss/litigation/litreleases.xml', 'SEC', 3),
-      fetchRSS('https://www.justice.gov/feeds/opa/justice-news.xml', 'DOJ', 3),
-    ]);
-    const secItems = sec.status === 'fulfilled' ? sec.value : [];
-    const dojItems = doj.status === 'fulfilled' ? doj.value : [];
-    return [...secItems, ...dojItems];
-  } catch (e) { console.error('Regulatory news:', e); return []; }
-}
-
-async function loadCryptoNews() {
-  try {
-    const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=ETH&sortOrder=popular&api_key=');
-    const d = await r.json();
-    if (!d.Data) throw new Error('CryptoCompare no Data');
-    return d.Data.slice(0, 5).map(n => ({
-      title: n.title, link: n.url, source: n.source_info?.name || 'Crypto',
-    }));
-  } catch (e) { console.error('Crypto news:', e); return []; }
-}
-
 async function loadEthPrice() {
   try {
     const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
     const d = await r.json();
     const eth = d.ethereum;
     if (!eth) throw new Error('CoinGecko no eth');
-    return { price: eth.usd, change: eth.usd_24h_change ?? null };
-  } catch (e) { console.error('ETH price:', e); return null; }
+    S.news.ethPrice = { price: eth.usd, change: eth.usd_24h_change ?? null };
+  } catch (e) { console.error('ETH price:', e); }
 }
 
 // ── Load all ──────────────────────────────────────────────────────────────────
 async function loadAll() {
   await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
-  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief(), loadNews()]);
+  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief(), loadEthPrice()]);
   renderView();
 }
 
@@ -669,35 +625,32 @@ function authBanner() {
 }
 
 function newsHTML() {
-  const { regulatory, crypto, ethPrice } = S.news;
+  const { ethPrice } = S.news;
   const ethTicker = ethPrice?.price ? `
     <div class="eth-ticker">
       <span class="eth-price-val">$${ethPrice.price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
       ${ethPrice.change != null ? `<span class="eth-change-val" style="color:${ethPrice.change >= 0 ? 'var(--green)' : 'var(--red)'}">${ethPrice.change >= 0 ? '▲' : '▼'} ${Math.abs(ethPrice.change).toFixed(2)}%</span>` : ''}
     </div>` : '';
+  const regLinks = [
+    { label: 'Banking Dive', url: 'https://www.bankingdive.com/' },
+    { label: 'OCC',          url: 'https://www.occ.gov/news-issuances/news-releases/index-news-releases.html' },
+    { label: 'FinCEN',       url: 'https://www.fincen.gov/news' },
+  ];
   return `
     <div class="section">
       <div class="section-title">Regulatory & Enforcement</div>
-      ${regulatory.length
-        ? regulatory.map(newsRowHTML).join('')
-        : '<div class="dim-note">No regulatory news loaded</div>'}
+      ${regLinks.map(l => `
+        <a class="email-row email-row-link" href="${l.url}" target="_blank" rel="noopener">
+          <div class="email-subject">${l.label}</div>
+        </a>`).join('')}
     </div>
     <div class="section">
       <div class="section-title">Ethereum</div>
       ${ethTicker}
-      ${crypto.length
-        ? crypto.map(newsRowHTML).join('')
-        : '<div class="dim-note">No crypto news loaded</div>'}
+      <a class="email-row email-row-link" href="https://www.coindesk.com/" target="_blank" rel="noopener">
+        <div class="email-subject">CoinDesk</div>
+      </a>
     </div>`;
-}
-
-function newsRowHTML(n) {
-  const inner = `
-    <div class="email-from">${esc(n.source)}</div>
-    <div class="email-subject">${esc(n.title)}</div>`;
-  return n.link
-    ? `<a class="email-row email-row-link" href="${escA(n.link)}" target="_blank" rel="noopener">${inner}</a>`
-    : `<div class="email-row">${inner}</div>`;
 }
 
 // ── FCIT view ─────────────────────────────────────────────────────────────────
