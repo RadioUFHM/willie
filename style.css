@@ -692,8 +692,14 @@ a.cal-title:active { opacity: 0.7; }
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
   cursor: default;
+  display: block;
 }
 .email-row:last-child { border-bottom: none; }
+a.email-row-link {
+  text-decoration: none;
+  cursor: pointer;
+}
+a.email-row-link:hover { background: rgba(255,255,255,0.03); border-radius: 6px; }
 
 .email-from {
   font-size: 13px;

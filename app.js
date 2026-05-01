@@ -201,6 +201,7 @@ async function loadAll() {
   await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
   await Promise.all([loadGmail(), loadCalendar(), loadContextDoc()]);
   renderView();
+  if (S.view === 'home') askWillie();
 }
 
 // ── Sheet loaders ─────────────────────────────────────────────────────────────
@@ -387,7 +388,7 @@ Empty array if a section has nothing urgent — never pad.`;
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
+        max_tokens: 2000,
         system,
         messages: [{ role: 'user', content: `Here is Rio's board:\n\n${context}\n\nGive him his brief as JSON.` }],
       }),
@@ -554,11 +555,13 @@ function homeHTML() {
 }
 
 function emailRowHTML(m) {
-  return `<div class="email-row">
+  const inner = `
     <div class="email-from">${esc(m.from.name)}</div>
     <div class="email-subject">${esc(m.subject)}</div>
-    ${m.snippet ? `<div class="email-snippet">${esc(m.snippet)}</div>` : ''}
-  </div>`;
+    ${m.snippet ? `<div class="email-snippet">${esc(m.snippet)}</div>` : ''}`;
+  return m.link
+    ? `<a class="email-row email-row-link" href="${escA(m.link)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<div class="email-row">${inner}</div>`;
 }
 
 function authBanner() {
