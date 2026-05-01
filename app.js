@@ -16,7 +16,7 @@ const S = {
   gmailError: null,
   calendar: [],
   contextDoc: '',
-  brief: '',
+  briefData: null,
   filter: { fcit: 'all', opf: 'all', creative: 'all' },
 };
 
@@ -138,7 +138,13 @@ async function gmailMeta(id) {
     const raw = h.From || '';
     const m = raw.match(/^"?([^"<]+?)"?\s*(?:<([^>]+)>)?$/);
     const from = m ? { name: m[1].trim(), email: m[2] || m[1].trim() } : { name: raw, email: raw };
-    return { id: data.id, from, subject: h.Subject || '(no subject)', snippet: (data.snippet || '').slice(0, 120) };
+    const threadId = data.threadId || data.id;
+    return {
+      id: data.id, threadId, from,
+      subject: h.Subject || '(no subject)',
+      snippet: (data.snippet || '').slice(0, 400),
+      link: `https://mail.google.com/mail/u/0/#inbox/${threadId}`,
+    };
   } catch { return null; }
 }
 
@@ -171,7 +177,8 @@ async function loadCalendar() {
       start: ev.start?.dateTime || ev.start?.date || '',
       allDay: !ev.start?.dateTime,
       attendees: (ev.attendees || []).filter(a => !a.self).map(a => a.displayName || a.email).slice(0, 3),
-      link: ev.hangoutLink || ev.conferenceData?.entryPoints?.[0]?.uri || '',
+      calLink: ev.htmlLink || '',
+      meetLink: ev.hangoutLink || ev.conferenceData?.entryPoints?.[0]?.uri || '',
     }));
   } catch (e) { console.error('Calendar:', e); }
 }
@@ -194,6 +201,7 @@ async function loadAll() {
   await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
   await Promise.all([loadGmail(), loadCalendar(), loadContextDoc()]);
   renderView();
+  if (S.view === 'home') askWillie();
 }
 
 // ── Sheet loaders ─────────────────────────────────────────────────────────────
@@ -256,45 +264,118 @@ async function askWillie() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>';
   area.style.display = 'block';
-  area.textContent = '';
+  area.innerHTML = '<div class="brief-thinking">Reading your day...</div>';
 
-  const t           = todays();
-  const followUps   = S.fcit.filter(e => e.dueDate && e.dueDate <= t).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
-  const opfDue      = S.opf.filter(e => e.dueDate && e.dueDate <= t && e.status !== 'done');
+  const t         = todays();
+  const followUps = S.fcit.filter(e => e.dueDate && e.dueDate <= t).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
+  const opfDue    = S.opf.filter(e => e.dueDate && e.dueDate <= t && e.status !== 'done');
   const creativeDue = S.creative.filter(e => e.dueDate && e.dueDate <= t && e.status !== 'done');
-  const allEmails   = [...S.gmail.unread, ...S.gmail.starred, ...S.gmail.pipeline];
+  const allEmails = [...S.gmail.unread, ...S.gmail.starred, ...S.gmail.pipeline];
 
-  const calLines = S.calendar.length
-    ? S.calendar.map(ev => `  ${ev.allDay ? 'All day' : fmtTime(ev.start)} — ${ev.title}${ev.attendees.length ? ` (with ${ev.attendees.join(', ')})` : ''}`)
-    : ['  No events today.'];
+  // Compute pipeline staleness
+  const now = new Date();
+  const daysSince = d => d ? Math.floor((now - new Date(d)) / 86400000) : 999;
+  const staleProspects = S.fcit.filter(e => e.stage === 'prospect' && daysSince(e.lastContact) >= 7);
+  const staleWarm      = S.fcit.filter(e => e.stage === 'warm'     && daysSince(e.lastContact) >= 14);
+  const staleProposal  = S.fcit.filter(e => e.stage === 'proposal' && daysSince(e.lastContact) >= 2);
 
-  const emailLines = allEmails.length
-    ? allEmails.map(m => `  ${m.from.name}: "${m.subject}" — ${m.snippet}`)
-    : ['  Inbox clear.'];
+  // Calendar with attendee/pipeline cross-reference
+  const calData = S.calendar.map(ev => {
+    const match = S.fcit.find(p =>
+      ev.attendees.some(a => a.toLowerCase().includes(p.name.toLowerCase().split(' ')[0]))
+    );
+    return {
+      time: ev.allDay ? 'All day' : fmtTime(ev.start),
+      title: ev.title,
+      attendees: ev.attendees.join(', '),
+      pipelineMatch: match ? `[PIPELINE: ${match.name}, ${match.stage}, last contact ${match.lastContact||'unknown'}]` : '',
+      calLink: ev.calLink,
+      meetLink: ev.meetLink,
+    };
+  });
+
+  // Email with pipeline cross-reference
+  const emailData = allEmails.map(m => {
+    const match = S.fcit.find(p =>
+      p.name.toLowerCase().split(' ').some(w => m.from.name.toLowerCase().includes(w))
+    );
+    return {
+      from: m.from.name,
+      subject: m.subject,
+      snippet: m.snippet,
+      link: m.link,
+      pipelineMatch: match ? `[PIPELINE: ${match.org}, ${match.stage}]` : '',
+    };
+  });
 
   const context = [
     `Today is ${fullDate()}.`,
     '',
     '## Calendar',
-    ...calLines,
+    calData.length
+      ? calData.map(e => `  [${e.time}] ${e.title}${e.attendees ? ` | with: ${e.attendees}` : ''}${e.pipelineMatch ? ` ${e.pipelineMatch}` : ''} | calLink: ${e.calLink}${e.meetLink ? ` | meetLink: ${e.meetLink}` : ''}`)
+      : ['  No events.'],
     '',
-    '## Inbox highlights',
-    ...emailLines,
+    '## Inbox',
+    emailData.length
+      ? emailData.map(m => `  From: ${m.from}${m.pipelineMatch ? ` ${m.pipelineMatch}` : ''} | Subject: ${m.subject} | Content: "${m.snippet}" | link: ${m.link}`)
+      : ['  Inbox clear.'],
     '',
-    `## FCIT follow-ups due (${followUps.length})`,
-    followUps.length ? followUps.map(e => `  - ${e.name} (${e.org}) [${e.stage}]: ${e.nextAction||'follow up'} — ${e.dueDate}`) : ['  None.'],
+    '## FCIT pipeline — full state',
+    S.fcit.length
+      ? S.fcit.map(e => `  ${e.name} (${e.org}) [${e.stage}] last contact: ${e.lastContact||'never'} | days since: ${daysSince(e.lastContact)} | next: ${e.nextAction||'—'}`)
+      : ['  Empty.'],
     '',
-    `## OPF tasks due today (${opfDue.length})`,
-    opfDue.length ? opfDue.map(e => `  - [${e.priority}] ${e.task}${e.category?' · '+e.category:''} — ${e.dueDate}`) : ['  None.'],
+    '## Stale pipeline (needs action)',
+    staleProposal.length ? staleProposal.map(e => `  [RED] PROPOSAL STALE ${daysSince(e.lastContact)}d: ${e.name} (${e.org})`) : [],
+    staleWarm.length     ? staleWarm.map(e =>     `  [WARN] WARM STALE ${daysSince(e.lastContact)}d: ${e.name} (${e.org}) — next: ${e.nextAction||'?'}`) : [],
+    staleProspects.length ? staleProspects.map(e => `  [NOTE] PROSPECT ${daysSince(e.lastContact)}d quiet: ${e.name} (${e.org})`) : [],
+    (staleProposal.length + staleWarm.length + staleProspects.length === 0) ? ['  All contacts current.'] : [],
     '',
-    `## Creative tasks due today (${creativeDue.length})`,
-    creativeDue.length ? creativeDue.map(e => `  - [${e.priority}] ${e.task} (${e.project}) — ${e.dueDate}`) : ['  None.'],
+    '## Tasks overdue/due today',
+    [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`),
+     ...opfDue.map(e => `  [OPF] ${e.task}`),
+     ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`),
+    ].length ? [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`), ...opfDue.map(e => `  [OPF] ${e.task}`)]
+             : ['  None.'],
   ].flat().join('\n');
 
-  const system = [
-    "You are Willie — Rio Miner's sharp, trusted personal EA. Give a punchy morning brief: what matters most today, who to reach out to, what meetings need prep, what to ship. Lead with what's urgent. Synthesize — don't just list. Direct and warm.",
-    S.contextDoc ? `\n\n## Rio's context and preferences:\n${S.contextDoc.slice(0, 4000)}` : '',
-  ].join('');
+  const system = `You are Willie — Rio Miner's sharp, trusted EA. You have already read his inbox, calendar, and pipeline before he woke up. You know his context cold.
+
+${S.contextDoc ? `## Rio's context:\n${S.contextDoc.slice(0, 4000)}\n\n` : ''}---
+
+## How to analyze each section
+
+**Email:** For every email, ask: what specific thing does this require from Rio today? Look for:
+- A document waiting for his signature
+- A commitment he made that someone is following up on
+- Something waiting on him (access, a draft, a decision, a reply)
+- A deadline he is about to miss
+- A warm lead or active client who needs a response
+Only surface emails where the answer is concrete and urgent. Ignore everything else.
+
+**Calendar:** For every meeting, ask: who is this with and what is at stake? Look for:
+- A pipeline contact (flagged [PIPELINE]) — note their stage and what needs to happen
+- A first meeting vs. recurring — first meetings need intro prep, recurring need "what did I promise last time"
+- A decision or deliverable expected at this meeting
+If a meeting attendee also appears in the inbox this week, flag the connection explicitly.
+
+**BD action:** Look at the stale pipeline data. Identify the single highest-leverage move Rio can make today to advance a deal. Be specific: name the person, the org, the action, and why today. "Call [name] at [org] — proposal has been out 4 days with no reply" not "follow up with prospects."
+
+---
+
+Return ONLY valid JSON, no markdown fences, no other text:
+{
+  "calendar": [{"title": "string", "link": "string", "analysis": "string", "priority": "high|medium|low"}],
+  "email": [{"title": "string", "from": "string", "link": "string", "analysis": "string", "priority": "high|medium|low"}],
+  "actions": [{"title": "string", "analysis": "string", "priority": "high|medium|low"}],
+  "bd": {"action": "string", "analysis": "string"}
+}
+
+Limits: calendar max 3, email max 4, actions max 3, bd exactly 1.
+analysis fields: 1-2 sentences max. Punchy. Tell Rio what to DO.
+priority: high = act now, medium = today, low = be aware.
+Empty array if a section has nothing urgent — never pad.`;
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -307,10 +388,9 @@ async function askWillie() {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 900,
-        stream: true,
+        max_tokens: 2000,
         system,
-        messages: [{ role: 'user', content: `Here is Rio's board:\n\n${context}\n\nGive him his brief.` }],
+        messages: [{ role: 'user', content: `Here is Rio's board:\n\n${context}\n\nGive him his brief as JSON.` }],
       }),
     });
 
@@ -319,38 +399,60 @@ async function askWillie() {
       throw new Error(err.error?.message || `API ${resp.status}`);
     }
 
-    const reader = resp.body.getReader();
-    const dec    = new TextDecoder();
-    let buf = '', text = '';
+    const data = await resp.json();
+    const raw  = data.content?.[0]?.text || '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6).trim();
-        if (raw === '[DONE]') break;
-        try {
-          const ev = JSON.parse(raw);
-          if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-            text += ev.delta.text;
-            area.textContent = text;
-          }
-        } catch {}
-      }
+    let brief;
+    try {
+      const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+      brief = JSON.parse(match ? match[1].trim() : raw.trim());
+    } catch {
+      area.innerHTML = `<div class="brief-text">${esc(raw)}</div>`;
+      return;
     }
 
-    S.brief = text || 'No response — check your API key in config.js.';
-    area.textContent = S.brief;
+    S.briefData = brief;
+    area.innerHTML = renderBrief(brief);
   } catch (err) {
-    area.textContent = `Willie couldn't connect: ${err.message}`;
+    area.innerHTML = `<div class="brief-thinking">Willie couldn't connect: ${esc(err.message)}</div>`;
+    console.error(err);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '✦ Ask Willie';
   }
+}
+
+function renderBrief(brief) {
+  const sections = [
+    { key: 'calendar', label: 'Calendar',  icon: '◈' },
+    { key: 'email',    label: 'Inbox',     icon: '✉' },
+    { key: 'actions',  label: 'Do today',  icon: '→' },
+  ];
+  const body = sections.map(({ key, label, icon }) => {
+    const items = (brief[key] || []);
+    if (!items.length) return '';
+    return `<div class="brief-section">
+      <div class="brief-section-head">${icon} ${label}</div>
+      ${items.map(item => `
+        <div class="brief-card bc-${item.priority || 'medium'}">
+          ${item.link
+            ? `<a class="brief-title" href="${escA(item.link)}" target="_blank" rel="noopener">${esc(item.title || item.from || '')}</a>`
+            : `<div class="brief-title no-link">${esc(item.title || '')}</div>`}
+          <div class="brief-analysis">${esc(item.analysis || '')}</div>
+        </div>`).join('')}
+    </div>`;
+  }).join('');
+
+  const bd = brief.bd;
+  const bdHtml = bd ? `<div class="brief-section">
+    <div class="brief-section-head">★ BD move</div>
+    <div class="brief-card bc-high">
+      <div class="brief-title no-link">${esc(bd.action || '')}</div>
+      <div class="brief-analysis">${esc(bd.analysis || '')}</div>
+    </div>
+  </div>` : '';
+
+  return body + bdHtml;
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -403,7 +505,7 @@ function homeHTML() {
     ${!S.token ? authBanner() : ''}
 
     <button class="willie-btn" id="wb" onclick="askWillie()">✦ Ask Willie</button>
-    <div class="brief-area" id="ba"${S.brief ? '' : ' style="display:none"'}>${S.brief ? esc(S.brief) : ''}</div>
+    <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>${S.briefData ? renderBrief(S.briefData) : ''}</div>
 
     <div class="section">
       <div class="section-title">Today · ${S.calendar.length} event${S.calendar.length !== 1 ? 's' : ''}</div>
@@ -413,10 +515,12 @@ function homeHTML() {
           <div class="cal-event">
             <div class="cal-time">${ev.allDay ? 'All day' : fmtTime(ev.start)}</div>
             <div class="cal-body">
-              <div class="cal-title">${esc(ev.title)}</div>
+              ${ev.calLink
+                ? `<a class="cal-title" href="${escA(ev.calLink)}" target="_blank" rel="noopener">${esc(ev.title)}</a>`
+                : `<div class="cal-title">${esc(ev.title)}</div>`}
               ${ev.attendees.length ? `<div class="cal-attendees">${esc(ev.attendees.join(', '))}</div>` : ''}
             </div>
-            ${ev.link ? `<a class="cal-join" href="${escA(ev.link)}" target="_blank" rel="noopener">Join</a>` : ''}
+            ${ev.meetLink ? `<a class="cal-join" href="${escA(ev.meetLink)}" target="_blank" rel="noopener">Join</a>` : ''}
           </div>`).join('')}
     </div>
 
@@ -451,11 +555,13 @@ function homeHTML() {
 }
 
 function emailRowHTML(m) {
-  return `<div class="email-row">
+  const inner = `
     <div class="email-from">${esc(m.from.name)}</div>
     <div class="email-subject">${esc(m.subject)}</div>
-    ${m.snippet ? `<div class="email-snippet">${esc(m.snippet)}</div>` : ''}
-  </div>`;
+    ${m.snippet ? `<div class="email-snippet">${esc(m.snippet)}</div>` : ''}`;
+  return m.link
+    ? `<a class="email-row email-row-link" href="${escA(m.link)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<div class="email-row">${inner}</div>`;
 }
 
 function authBanner() {
