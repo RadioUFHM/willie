@@ -18,6 +18,7 @@ const S = {
   contextDoc: '',
   briefData: null,
   chatHistory: [],
+  news: { regulatory: [], crypto: [], ethPrice: null },
   filter: { fcit: 'all', opf: 'all', creative: 'all' },
 };
 
@@ -197,10 +198,61 @@ async function loadContextDoc() {
   } catch (e) { console.error('Drive:', e); }
 }
 
+// ── News ──────────────────────────────────────────────────────────────────────
+const RSS2JSON = 'https://api.rss2json.com/v1/api.json?count=5&rss_url=';
+
+async function loadNews() {
+  try {
+    const [regulatory, crypto, ethPrice] = await Promise.all([
+      loadRegulatoryNews(),
+      loadCryptoNews(),
+      loadEthPrice(),
+    ]);
+    S.news = { regulatory, crypto, ethPrice };
+  } catch (e) { console.error('News:', e); }
+}
+
+async function loadRegulatoryNews() {
+  try {
+    const feeds = [
+      'https://www.sec.gov/rss/litigation/litreleases.xml',
+      'https://www.justice.gov/feeds/opa/justice-news.xml',
+    ];
+    const results = await Promise.all(feeds.map(async feed => {
+      const r = await fetch(RSS2JSON + enc(feed));
+      const d = await r.json();
+      return (d.items || []).slice(0, 3).map(i => ({
+        title: i.title, link: i.link,
+        source: feed.includes('sec.gov') ? 'SEC' : 'DOJ',
+      }));
+    }));
+    return results.flat().slice(0, 6);
+  } catch (e) { console.error('Regulatory news:', e); return []; }
+}
+
+async function loadCryptoNews() {
+  try {
+    const r = await fetch(RSS2JSON + enc('https://www.coindesk.com/arc/outboundfeeds/rss/') + '&count=20');
+    const d = await r.json();
+    const items = d.items || [];
+    const ethItems = items.filter(i => /ethereum|eth\b/i.test(i.title));
+    return (ethItems.length ? ethItems.slice(0, 4) : items.slice(0, 4))
+      .map(i => ({ title: i.title, link: i.link, source: 'CoinDesk' }));
+  } catch (e) { console.error('Crypto news:', e); return []; }
+}
+
+async function loadEthPrice() {
+  try {
+    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
+    const d = await r.json();
+    return { price: d.ethereum?.usd, change: d.ethereum?.usd_24h_change };
+  } catch (e) { return null; }
+}
+
 // ── Load all ──────────────────────────────────────────────────────────────────
 async function loadAll() {
   await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
-  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief()]);
+  await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief(), loadNews()]);
   renderView();
 }
 
@@ -590,6 +642,8 @@ function homeHTML() {
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ Overdue · ':dueStat(e.dueDate)==='today'?'◈ Today · ':''}${fmtDate(e.dueDate)}</div>` : ''}
           </div>`).join('')}
     </div>
+
+    ${newsHTML()}
   `;
 }
 
@@ -608,6 +662,35 @@ function authBanner() {
     <div class="auth-banner-text">Connect Google to sync Sheets, Gmail &amp; Calendar.</div>
     <button class="auth-banner-btn" onclick="requestAuth()">Connect</button>
   </div>`;
+}
+
+function newsHTML() {
+  const { regulatory, crypto, ethPrice } = S.news;
+  const ethLabel = ethPrice
+    ? ` · ETH $${ethPrice.price?.toLocaleString('en-US', { maximumFractionDigits: 0 })} <span style="color:${ethPrice.change >= 0 ? 'var(--green)' : 'var(--red)'}">${ethPrice.change >= 0 ? '▲' : '▼'}${Math.abs(ethPrice.change).toFixed(1)}%</span>`
+    : '';
+  return `
+    <div class="section">
+      <div class="section-title">Regulatory & Enforcement</div>
+      ${regulatory.length
+        ? regulatory.map(newsRowHTML).join('')
+        : '<div class="dim-note">Loading...</div>'}
+    </div>
+    <div class="section">
+      <div class="section-title">Crypto${ethLabel}</div>
+      ${crypto.length
+        ? crypto.map(newsRowHTML).join('')
+        : '<div class="dim-note">Loading...</div>'}
+    </div>`;
+}
+
+function newsRowHTML(n) {
+  const inner = `
+    <div class="email-from">${esc(n.source)}</div>
+    <div class="email-subject">${esc(n.title)}</div>`;
+  return n.link
+    ? `<a class="email-row email-row-link" href="${escA(n.link)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<div class="email-row">${inner}</div>`;
 }
 
 // ── FCIT view ─────────────────────────────────────────────────────────────────
