@@ -539,7 +539,7 @@ function homeHTML() {
 
     ${!S.token ? authBanner() : ''}
 
-    <button class="willie-btn" id="wb" onclick="askWillie()">✦ ${S.briefSource === 'precomputed' ? 'Refresh Brief' : 'Ask Willie'}</button>
+    <button class="willie-btn" id="wb" onclick="askWillie()">✦ Say Hey, Willie</button>
     <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>
       ${S.briefData && S.briefSource === 'precomputed' ? `<div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">✦ Ready at ${new Date(S.briefData.generatedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>` : ''}
       ${S.briefData ? renderBrief(S.briefData) : ''}
