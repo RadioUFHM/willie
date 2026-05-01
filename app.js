@@ -200,45 +200,44 @@ async function loadContextDoc() {
 
 // ── News ──────────────────────────────────────────────────────────────────────
 async function loadNews() {
-  try {
-    const [regulatory, crypto, ethPrice] = await Promise.all([
-      loadRegulatoryNews(),
-      loadCryptoNews(),
-      loadEthPrice(),
-    ]);
-    S.news = { regulatory, crypto, ethPrice };
-  } catch (e) { console.error('News:', e); }
+  const [regulatory, crypto, ethPrice] = await Promise.all([
+    loadRegulatoryNews(),
+    loadCryptoNews(),
+    loadEthPrice(),
+  ]);
+  S.news = { regulatory, crypto, ethPrice };
 }
 
-async function fetchRSS(url, source, max = 4) {
-  const proxy = `https://api.allorigins.win/get?url=${enc(url)}`;
-  const r = await fetch(proxy);
+async function fetchRSS(feedUrl, source, max = 4) {
+  const api = `https://api.rss2json.com/v1/api.json?rss_url=${enc(feedUrl)}&count=${max}`;
+  const r = await fetch(api);
   const d = await r.json();
-  const xml = new DOMParser().parseFromString(d.contents, 'text/xml');
-  const items = [...xml.querySelectorAll('item, entry')].slice(0, max);
-  return items.map(el => ({
-    title: el.querySelector('title')?.textContent?.trim() || '',
-    link:  el.querySelector('link')?.textContent?.trim() ||
-           el.querySelector('link')?.getAttribute('href') || '',
+  if (d.status !== 'ok') throw new Error(`rss2json error: ${d.message}`);
+  return (d.items || []).map(item => ({
+    title: item.title?.trim() || '',
+    link:  item.link || '',
     source,
   })).filter(i => i.title);
 }
 
 async function loadRegulatoryNews() {
   try {
-    const [sec, doj] = await Promise.all([
+    const [sec, doj] = await Promise.allSettled([
       fetchRSS('https://www.sec.gov/rss/litigation/litreleases.xml', 'SEC', 3),
       fetchRSS('https://www.justice.gov/feeds/opa/justice-news.xml', 'DOJ', 3),
     ]);
-    return [...sec, ...doj];
+    const secItems = sec.status === 'fulfilled' ? sec.value : [];
+    const dojItems = doj.status === 'fulfilled' ? doj.value : [];
+    return [...secItems, ...dojItems];
   } catch (e) { console.error('Regulatory news:', e); return []; }
 }
 
 async function loadCryptoNews() {
   try {
-    const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=ETH&sortOrder=popular');
+    const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=ETH&sortOrder=popular&api_key=');
     const d = await r.json();
-    return (d.Data || []).slice(0, 5).map(n => ({
+    if (!d.Data) throw new Error('CryptoCompare no Data');
+    return d.Data.slice(0, 5).map(n => ({
       title: n.title, link: n.url, source: n.source_info?.name || 'Crypto',
     }));
   } catch (e) { console.error('Crypto news:', e); return []; }
@@ -246,13 +245,12 @@ async function loadCryptoNews() {
 
 async function loadEthPrice() {
   try {
-    const r = await fetch('https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD&extraParams=willie');
-    const spot = await r.json();
-    const r2 = await fetch('https://min-api.cryptocompare.com/data/generateAvg?fsym=ETH&tsym=USD&e=Kraken');
-    const avg = await r2.json();
-    const change = avg.RAW?.CHANGEPCT24HOUR ?? null;
-    return { price: spot.USD, change };
-  } catch (e) { return null; }
+    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
+    const d = await r.json();
+    const eth = d.ethereum;
+    if (!eth) throw new Error('CoinGecko no eth');
+    return { price: eth.usd, change: eth.usd_24h_change ?? null };
+  } catch (e) { console.error('ETH price:', e); return null; }
 }
 
 // ── Load all ──────────────────────────────────────────────────────────────────
@@ -682,14 +680,14 @@ function newsHTML() {
       <div class="section-title">Regulatory & Enforcement</div>
       ${regulatory.length
         ? regulatory.map(newsRowHTML).join('')
-        : '<div class="dim-note">Loading...</div>'}
+        : '<div class="dim-note">No regulatory news loaded</div>'}
     </div>
     <div class="section">
       <div class="section-title">Ethereum</div>
       ${ethTicker}
       ${crypto.length
         ? crypto.map(newsRowHTML).join('')
-        : '<div class="dim-note">Loading...</div>'}
+        : '<div class="dim-note">No crypto news loaded</div>'}
     </div>`;
 }
 
