@@ -14,7 +14,7 @@
   --amber:     #e8a85a;
   --purple:    #9b6de8;
   --red:       #e86d6d;
-  --orange:    #f5780a;
+  --orange:    rgba(245, 120, 10, 0.72);
   --nav-h:     68px;
   --sb:        env(safe-area-inset-bottom, 0px);
 }
