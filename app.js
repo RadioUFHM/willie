@@ -142,7 +142,7 @@ async function gmailMeta(id) {
     return {
       id: data.id, threadId, from,
       subject: h.Subject || '(no subject)',
-      snippet: (data.snippet || '').slice(0, 120),
+      snippet: (data.snippet || '').slice(0, 400),
       link: `https://mail.google.com/mail/u/0/#inbox/${threadId}`,
     };
   } catch { return null; }
@@ -271,65 +271,110 @@ async function askWillie() {
   const creativeDue = S.creative.filter(e => e.dueDate && e.dueDate <= t && e.status !== 'done');
   const allEmails = [...S.gmail.unread, ...S.gmail.starred, ...S.gmail.pipeline];
 
-  // Build calendar data with links for Claude to include in output
-  const calData = S.calendar.map(ev => ({
-    time: ev.allDay ? 'All day' : fmtTime(ev.start),
-    title: ev.title,
-    attendees: ev.attendees.join(', '),
-    calLink: ev.calLink,
-    meetLink: ev.meetLink,
-  }));
+  // Compute pipeline staleness
+  const now = new Date();
+  const daysSince = d => d ? Math.floor((now - new Date(d)) / 86400000) : 999;
+  const staleProspects = S.fcit.filter(e => e.stage === 'prospect' && daysSince(e.lastContact) >= 7);
+  const staleWarm      = S.fcit.filter(e => e.stage === 'warm'     && daysSince(e.lastContact) >= 14);
+  const staleProposal  = S.fcit.filter(e => e.stage === 'proposal' && daysSince(e.lastContact) >= 2);
 
-  // Build email data with thread links
-  const emailData = allEmails.map(m => ({
-    from: m.from.name,
-    subject: m.subject,
-    snippet: m.snippet,
-    link: m.link,
-    inPipeline: S.fcit.some(e => e.name.toLowerCase().includes(m.from.name.toLowerCase().split(' ')[0])),
-  }));
+  // Calendar with attendee/pipeline cross-reference
+  const calData = S.calendar.map(ev => {
+    const match = S.fcit.find(p =>
+      ev.attendees.some(a => a.toLowerCase().includes(p.name.toLowerCase().split(' ')[0]))
+    );
+    return {
+      time: ev.allDay ? 'All day' : fmtTime(ev.start),
+      title: ev.title,
+      attendees: ev.attendees.join(', '),
+      pipelineMatch: match ? `[PIPELINE: ${match.name}, ${match.stage}, last contact ${match.lastContact||'unknown'}]` : '',
+      calLink: ev.calLink,
+      meetLink: ev.meetLink,
+    };
+  });
+
+  // Email with pipeline cross-reference
+  const emailData = allEmails.map(m => {
+    const match = S.fcit.find(p =>
+      p.name.toLowerCase().split(' ').some(w => m.from.name.toLowerCase().includes(w))
+    );
+    return {
+      from: m.from.name,
+      subject: m.subject,
+      snippet: m.snippet,
+      link: m.link,
+      pipelineMatch: match ? `[PIPELINE: ${match.org}, ${match.stage}]` : '',
+    };
+  });
 
   const context = [
     `Today is ${fullDate()}.`,
     '',
     '## Calendar',
-    calData.length ? calData.map(e => `  [${e.time}] ${e.title}${e.attendees ? ` with ${e.attendees}` : ''} | calLink: ${e.calLink}${e.meetLink ? ` | meetLink: ${e.meetLink}` : ''}`) : ['  No events.'],
+    calData.length
+      ? calData.map(e => `  [${e.time}] ${e.title}${e.attendees ? ` | with: ${e.attendees}` : ''}${e.pipelineMatch ? ` ${e.pipelineMatch}` : ''} | calLink: ${e.calLink}${e.meetLink ? ` | meetLink: ${e.meetLink}` : ''}`)
+      : ['  No events.'],
     '',
-    '## Inbox (flag if sender is in FCIT pipeline)',
-    emailData.length ? emailData.map(m => `  ${m.inPipeline ? '[PIPELINE] ' : ''}From: ${m.from} | Subject: ${m.subject} | "${m.snippet}" | link: ${m.link}`) : ['  Inbox clear.'],
+    '## Inbox',
+    emailData.length
+      ? emailData.map(m => `  From: ${m.from}${m.pipelineMatch ? ` ${m.pipelineMatch}` : ''} | Subject: ${m.subject} | Content: "${m.snippet}" | link: ${m.link}`)
+      : ['  Inbox clear.'],
     '',
-    '## FCIT pipeline',
-    S.fcit.length ? S.fcit.map(e => `  ${e.name} (${e.org}) [${e.stage}] last: ${e.lastContact||'unknown'} next: ${e.nextAction||'—'} due: ${e.dueDate||'—'}`) : ['  Empty.'],
+    '## FCIT pipeline — full state',
+    S.fcit.length
+      ? S.fcit.map(e => `  ${e.name} (${e.org}) [${e.stage}] last contact: ${e.lastContact||'never'} | days since: ${daysSince(e.lastContact)} | next: ${e.nextAction||'—'}`)
+      : ['  Empty.'],
+    '',
+    '## Stale pipeline (needs action)',
+    staleProposal.length ? staleProposal.map(e => `  [RED] PROPOSAL STALE ${daysSince(e.lastContact)}d: ${e.name} (${e.org})`) : [],
+    staleWarm.length     ? staleWarm.map(e =>     `  [WARN] WARM STALE ${daysSince(e.lastContact)}d: ${e.name} (${e.org}) — next: ${e.nextAction||'?'}`) : [],
+    staleProspects.length ? staleProspects.map(e => `  [NOTE] PROSPECT ${daysSince(e.lastContact)}d quiet: ${e.name} (${e.org})`) : [],
+    (staleProposal.length + staleWarm.length + staleProspects.length === 0) ? ['  All contacts current.'] : [],
     '',
     '## Tasks overdue/due today',
     [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`),
      ...opfDue.map(e => `  [OPF] ${e.task}`),
-     ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`)].length
-      ? [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`),
-         ...opfDue.map(e => `  [OPF] ${e.task}`),
-         ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`)]
-      : ['  None.'],
+     ...creativeDue.map(e => `  [Creative] ${e.task} (${e.project})`),
+    ].length ? [...followUps.map(e => `  [FCIT] ${e.name} — ${e.nextAction}`), ...opfDue.map(e => `  [OPF] ${e.task}`)]
+             : ['  None.'],
   ].flat().join('\n');
 
-  const system = `You are Willie — Rio Miner's trusted personal EA. You have read his calendar, inbox, and pipeline before he woke up.
+  const system = `You are Willie — Rio Miner's sharp, trusted EA. You have already read his inbox, calendar, and pipeline before he woke up. You know his context cold.
 
-Your job: give Rio a prioritized morning brief as a JSON object. Be ruthlessly selective. Only surface what needs his attention today. Cross-reference everything — a pipeline contact in the inbox is more important than a stranger. A meeting with a prospect needs prep noted.
+${S.contextDoc ? `## Rio's context:\n${S.contextDoc.slice(0, 4000)}\n\n` : ''}---
 
-${S.contextDoc ? `## Rio's context and preferences:\n${S.contextDoc.slice(0, 4000)}\n` : ''}
-Return ONLY valid JSON, no markdown fences, no explanation:
+## How to analyze each section
+
+**Email:** For every email, ask: what specific thing does this require from Rio today? Look for:
+- A document waiting for his signature
+- A commitment he made that someone is following up on
+- Something waiting on him (access, a draft, a decision, a reply)
+- A deadline he is about to miss
+- A warm lead or active client who needs a response
+Only surface emails where the answer is concrete and urgent. Ignore everything else.
+
+**Calendar:** For every meeting, ask: who is this with and what is at stake? Look for:
+- A pipeline contact (flagged [PIPELINE]) — note their stage and what needs to happen
+- A first meeting vs. recurring — first meetings need intro prep, recurring need "what did I promise last time"
+- A decision or deliverable expected at this meeting
+If a meeting attendee also appears in the inbox this week, flag the connection explicitly.
+
+**BD action:** Look at the stale pipeline data. Identify the single highest-leverage move Rio can make today to advance a deal. Be specific: name the person, the org, the action, and why today. "Call [name] at [org] — proposal has been out 4 days with no reply" not "follow up with prospects."
+
+---
+
+Return ONLY valid JSON, no markdown fences, no other text:
 {
   "calendar": [{"title": "string", "link": "string", "analysis": "string", "priority": "high|medium|low"}],
   "email": [{"title": "string", "from": "string", "link": "string", "analysis": "string", "priority": "high|medium|low"}],
-  "actions": [{"title": "string", "analysis": "string", "priority": "high|medium|low"}]
+  "actions": [{"title": "string", "analysis": "string", "priority": "high|medium|low"}],
+  "bd": {"action": "string", "analysis": "string"}
 }
 
-Rules:
-- calendar: max 3. Only events needing prep, a key relationship, or a decision. Use the calLink provided.
-- email: max 4. Only threads needing Rio's action TODAY. Use the link provided. Flag pipeline contacts.
-- actions: max 3. Specific BD or project nudges. "Email X about Y" not "Follow up with pipeline."
-- analysis: 1-2 sentences. Specific. Tell Rio what to DO, not what IS.
-- priority: high = act now, medium = today, low = be aware
-- If a section has nothing urgent, return empty array — do not pad with low-value items`;
+Limits: calendar max 3, email max 4, actions max 3, bd exactly 1.
+analysis fields: 1-2 sentences max. Punchy. Tell Rio what to DO.
+priority: high = act now, medium = today, low = be aware.
+Empty array if a section has nothing urgent — never pad.`;
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -382,7 +427,7 @@ function renderBrief(brief) {
     { key: 'email',    label: 'Inbox',     icon: '✉' },
     { key: 'actions',  label: 'Do today',  icon: '→' },
   ];
-  return sections.map(({ key, label, icon }) => {
+  const body = sections.map(({ key, label, icon }) => {
     const items = (brief[key] || []);
     if (!items.length) return '';
     return `<div class="brief-section">
@@ -396,6 +441,17 @@ function renderBrief(brief) {
         </div>`).join('')}
     </div>`;
   }).join('');
+
+  const bd = brief.bd;
+  const bdHtml = bd ? `<div class="brief-section">
+    <div class="brief-section-head">★ BD move</div>
+    <div class="brief-card bc-high">
+      <div class="brief-title no-link">${esc(bd.action || '')}</div>
+      <div class="brief-analysis">${esc(bd.analysis || '')}</div>
+    </div>
+  </div>` : '';
+
+  return body + bdHtml;
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
