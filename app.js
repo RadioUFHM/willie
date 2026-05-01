@@ -199,8 +199,6 @@ async function loadContextDoc() {
 }
 
 // ── News ──────────────────────────────────────────────────────────────────────
-const RSS2JSON = 'https://api.rss2json.com/v1/api.json?count=5&rss_url=';
-
 async function loadNews() {
   try {
     const [regulatory, crypto, ethPrice] = await Promise.all([
@@ -212,40 +210,48 @@ async function loadNews() {
   } catch (e) { console.error('News:', e); }
 }
 
+async function fetchRSS(url, source, max = 4) {
+  const proxy = `https://api.allorigins.win/get?url=${enc(url)}`;
+  const r = await fetch(proxy);
+  const d = await r.json();
+  const xml = new DOMParser().parseFromString(d.contents, 'text/xml');
+  const items = [...xml.querySelectorAll('item, entry')].slice(0, max);
+  return items.map(el => ({
+    title: el.querySelector('title')?.textContent?.trim() || '',
+    link:  el.querySelector('link')?.textContent?.trim() ||
+           el.querySelector('link')?.getAttribute('href') || '',
+    source,
+  })).filter(i => i.title);
+}
+
 async function loadRegulatoryNews() {
   try {
-    const feeds = [
-      'https://www.sec.gov/rss/litigation/litreleases.xml',
-      'https://www.justice.gov/feeds/opa/justice-news.xml',
-    ];
-    const results = await Promise.all(feeds.map(async feed => {
-      const r = await fetch(RSS2JSON + enc(feed));
-      const d = await r.json();
-      return (d.items || []).slice(0, 3).map(i => ({
-        title: i.title, link: i.link,
-        source: feed.includes('sec.gov') ? 'SEC' : 'DOJ',
-      }));
-    }));
-    return results.flat().slice(0, 6);
+    const [sec, doj] = await Promise.all([
+      fetchRSS('https://www.sec.gov/rss/litigation/litreleases.xml', 'SEC', 3),
+      fetchRSS('https://www.justice.gov/feeds/opa/justice-news.xml', 'DOJ', 3),
+    ]);
+    return [...sec, ...doj];
   } catch (e) { console.error('Regulatory news:', e); return []; }
 }
 
 async function loadCryptoNews() {
   try {
-    const r = await fetch(RSS2JSON + enc('https://www.coindesk.com/arc/outboundfeeds/rss/') + '&count=20');
+    const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=ETH&sortOrder=popular');
     const d = await r.json();
-    const items = d.items || [];
-    const ethItems = items.filter(i => /ethereum|eth\b/i.test(i.title));
-    return (ethItems.length ? ethItems.slice(0, 4) : items.slice(0, 4))
-      .map(i => ({ title: i.title, link: i.link, source: 'CoinDesk' }));
+    return (d.Data || []).slice(0, 5).map(n => ({
+      title: n.title, link: n.url, source: n.source_info?.name || 'Crypto',
+    }));
   } catch (e) { console.error('Crypto news:', e); return []; }
 }
 
 async function loadEthPrice() {
   try {
-    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
-    const d = await r.json();
-    return { price: d.ethereum?.usd, change: d.ethereum?.usd_24h_change };
+    const r = await fetch('https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD&extraParams=willie');
+    const spot = await r.json();
+    const r2 = await fetch('https://min-api.cryptocompare.com/data/generateAvg?fsym=ETH&tsym=USD&e=Kraken');
+    const avg = await r2.json();
+    const change = avg.RAW?.CHANGEPCT24HOUR ?? null;
+    return { price: spot.USD, change };
   } catch (e) { return null; }
 }
 
@@ -666,9 +672,11 @@ function authBanner() {
 
 function newsHTML() {
   const { regulatory, crypto, ethPrice } = S.news;
-  const ethLabel = ethPrice
-    ? ` · ETH $${ethPrice.price?.toLocaleString('en-US', { maximumFractionDigits: 0 })} <span style="color:${ethPrice.change >= 0 ? 'var(--green)' : 'var(--red)'}">${ethPrice.change >= 0 ? '▲' : '▼'}${Math.abs(ethPrice.change).toFixed(1)}%</span>`
-    : '';
+  const ethTicker = ethPrice?.price ? `
+    <div class="eth-ticker">
+      <span class="eth-price-val">$${ethPrice.price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+      ${ethPrice.change != null ? `<span class="eth-change-val" style="color:${ethPrice.change >= 0 ? 'var(--green)' : 'var(--red)'}">${ethPrice.change >= 0 ? '▲' : '▼'} ${Math.abs(ethPrice.change).toFixed(2)}%</span>` : ''}
+    </div>` : '';
   return `
     <div class="section">
       <div class="section-title">Regulatory & Enforcement</div>
@@ -677,7 +685,8 @@ function newsHTML() {
         : '<div class="dim-note">Loading...</div>'}
     </div>
     <div class="section">
-      <div class="section-title">Crypto${ethLabel}</div>
+      <div class="section-title">Ethereum</div>
+      ${ethTicker}
       ${crypto.length
         ? crypto.map(newsRowHTML).join('')
         : '<div class="dim-note">Loading...</div>'}

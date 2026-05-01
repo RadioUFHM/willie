@@ -794,6 +794,25 @@ a.email-row-link:hover { background: rgba(255,255,255,0.03); border-radius: 6px;
   transform: translateX(-50%) translateY(0);
 }
 
+/* ── ETH ticker ────────────────────────────────────── */
+.eth-ticker {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-left: 2px;
+}
+.eth-price-val {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+.eth-change-val {
+  font-size: 16px;
+  font-weight: 600;
+}
+
 /* ── Willie Chat ───────────────────────────────────── */
 .chat-header {
   display: flex;
