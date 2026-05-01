@@ -17,6 +17,7 @@ const S = {
   calendar: [],
   contextDoc: '',
   briefData: null,
+  chatHistory: [],
   filter: { fcit: 'all', opf: 'all', creative: 'all' },
 };
 
@@ -539,7 +540,7 @@ function homeHTML() {
 
     ${!S.token ? authBanner() : ''}
 
-    <button class="willie-btn" id="wb" onclick="askWillie()">✦ Say Hey, Willie</button>
+    <button class="willie-btn" id="wb" onclick="openWillieChat()">✦ Say Hey, Willie</button>
     <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>
       ${S.briefData && S.briefSource === 'precomputed' ? `<div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">✦ Ready at ${new Date(S.briefData.generatedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>` : ''}
       ${S.briefData ? renderBrief(S.briefData) : ''}
@@ -1017,6 +1018,129 @@ function voice(fieldId, btnId) {
   recognition.onend = done;
   recognition.onerror = e => { done(); if (e.error !== 'no-speech') toast('Voice: ' + e.error); };
   recognition.start();
+}
+
+// ── Willie Chat ───────────────────────────────────────────────────────────────
+function openWillieChat() {
+  if (!S.chatHistory.length) {
+    const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
+    const stale = S.fcit.filter(e => e.stage !== 'closed' && daysSince(e.lastContact) >= 7);
+    const due   = S.opf.filter(e => e.status !== 'done' && e.dueDate && e.dueDate <= todays()).length;
+    const intro  = S.briefData
+      ? `Good ${greeting().split(' ')[1].toLowerCase()}, Rio. Brief is ready — ${S.briefData.calendar?.length || 0} calendar item${S.briefData.calendar?.length !== 1 ? 's' : ''}, ${S.briefData.email?.length || 0} email${S.briefData.email?.length !== 1 ? 's' : ''} worth your attention${due ? `, ${due} task${due !== 1 ? 's' : ''} due today` : ''}${stale.length ? `, ${stale.length} stale pipeline contact${stale.length !== 1 ? 's' : ''}` : ''}. What do you want to dig into?`
+      : `Hey Rio — no brief loaded yet. What's on your mind?`;
+    S.chatHistory.push({ role: 'assistant', content: intro });
+  }
+
+  showModal(`
+    <div class="modal-handle"></div>
+    <div class="chat-header"><div class="chat-title">✦ Willie</div></div>
+    <div class="chat-messages" id="chat-msgs">
+      ${S.chatHistory.map(chatMsgHTML).join('')}
+    </div>
+    <div class="chat-input-row">
+      <div class="voice-wrap" style="flex:1">
+        <textarea class="field-textarea chat-textarea" id="chat-input" rows="1" placeholder="Ask Willie anything..."></textarea>
+        <button class="voice-btn" id="chat-vb" type="button">🎤</button>
+      </div>
+      <button class="chat-send" id="chat-send">↑</button>
+    </div>
+  `, () => {
+    const input = document.getElementById('chat-input');
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendWillieMessage(); }
+    });
+    document.getElementById('chat-send').addEventListener('click', sendWillieMessage);
+    document.getElementById('chat-vb').addEventListener('click', () => voice('chat-input', 'chat-vb'));
+    scrollChatToBottom();
+  });
+}
+
+function chatMsgHTML(m) {
+  return `<div class="chat-msg chat-msg-${m.role}">
+    ${m.role === 'assistant' ? '<div class="chat-msg-label">Willie</div>' : ''}
+    <div class="chat-msg-text">${esc(m.content)}</div>
+  </div>`;
+}
+
+function scrollChatToBottom() {
+  const el = document.getElementById('chat-msgs');
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+async function sendWillieMessage() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = ''; input.style.height = 'auto';
+
+  S.chatHistory.push({ role: 'user', content: msg });
+  const msgs = document.getElementById('chat-msgs');
+  msgs.insertAdjacentHTML('beforeend', chatMsgHTML({ role: 'user', content: msg }));
+
+  const tid = 'typing-' + Date.now();
+  msgs.insertAdjacentHTML('beforeend',
+    `<div class="chat-msg chat-msg-assistant" id="${tid}">
+       <div class="chat-msg-label">Willie</div>
+       <div class="chat-msg-text chat-typing">...</div>
+     </div>`);
+  scrollChatToBottom();
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: buildWillieContext(),
+        messages: S.chatHistory,
+      }),
+    });
+    const data = await resp.json();
+    const reply = data.content?.[0]?.text || 'Something went wrong — try again.';
+    S.chatHistory.push({ role: 'assistant', content: reply });
+    const el = document.getElementById(tid);
+    if (el) el.outerHTML = chatMsgHTML({ role: 'assistant', content: reply });
+  } catch (err) {
+    const el = document.getElementById(tid);
+    if (el) el.outerHTML = chatMsgHTML({ role: 'assistant', content: 'Connection error — try again.' });
+  }
+  scrollChatToBottom();
+}
+
+function buildWillieContext() {
+  const t = todays();
+  const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
+  return `You are Willie — Rio Miner's sharp, trusted executive assistant. Today is ${fullDate()}.
+
+${S.briefData ? `## Today's brief
+Calendar: ${JSON.stringify(S.briefData.calendar || [])}
+Email: ${JSON.stringify(S.briefData.email || [])}
+Actions: ${JSON.stringify(S.briefData.actions || [])}
+BD move: ${JSON.stringify(S.briefData.bd || {})}
+` : ''}## FCIT Pipeline
+${S.fcit.map(e => `${e.name} (${e.org}) [${e.stage}] last contact: ${e.lastContact||'never'} (${daysSince(e.lastContact)}d ago) next: ${e.nextAction||'—'}`).join('\n') || 'Empty.'}
+
+## Active OPF Tasks
+${S.opf.filter(e=>e.status!=='done').map(e=>`[${e.priority}] ${e.task} — ${e.status}${e.dueDate?` due ${e.dueDate}`:''}`).join('\n') || 'None.'}
+
+## Active Creative Tasks
+${S.creative.filter(e=>e.status!=='done').map(e=>`[${e.project}] ${e.task} — ${e.status}`).join('\n') || 'None.'}
+
+## Calendar today
+${S.calendar.map(ev=>`${ev.allDay?'All day':fmtTime(ev.start)} — ${ev.title}${ev.attendees.length?` (with ${ev.attendees.join(', ')})`:''}`).join('\n') || 'No events.'}
+
+Rio can ask you anything: dig into his brief, get advice, draft a message, prioritize his day, or tell you what to focus on in future briefs. Be direct, specific, action-oriented. No fluff. One clear answer at a time unless he asks for more.`;
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
