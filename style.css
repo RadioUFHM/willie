@@ -174,9 +174,16 @@ nav {
 }
 
 /* Willie button */
-.willie-btn {
+.action-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
   margin: 0 24px 16px;
-  width: calc(100% - 48px);
+}
+.willie-btn {
+  flex: 1;
+  margin: 0;
+  width: auto;
   padding: 18px;
   background: var(--orange);
   border: none;
@@ -194,6 +201,58 @@ nav {
 }
 .willie-btn:active { opacity: 0.85; transform: scale(0.98); }
 .willie-btn:disabled { opacity: 0.55; }
+.scan-btn {
+  width: 56px;
+  flex-shrink: 0;
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.scan-btn:active { opacity: 0.6; }
+
+/* List scan review */
+.list-scan-loading {
+  text-align: center;
+  padding: 40px 0;
+  color: var(--t2);
+  font-size: 16px;
+}
+.list-review-item {
+  position: relative;
+  padding: 14px 14px 12px;
+  background: var(--s2);
+  border-radius: 12px;
+  margin-bottom: 10px;
+}
+.list-review-remove {
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 28px; height: 28px;
+  background: var(--s3);
+  border-radius: 8px;
+  color: var(--t2);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.list-fcit-badge {
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-d);
+  border-radius: 6px;
+  padding: 5px 9px;
+  margin-top: 8px;
+  display: inline-block;
+}
 
 /* Brief */
 .brief-area {

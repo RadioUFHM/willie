@@ -387,7 +387,10 @@ function homeHTML() {
 
     ${!S.token ? authBanner() : ''}
 
-    <button class="willie-btn" id="wb" onclick="openWillieChat()">✦ Say Hey, Willie</button>
+    <div class="action-row">
+      <button class="willie-btn" id="wb" onclick="openWillieChat()">✦ Say Hey, Willie</button>
+      <button class="scan-btn" id="scan-btn" title="Scan to-do list">📷</button>
+    </div>
     <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>
       ${S.briefData && S.briefSource === 'precomputed' ? `<div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">✦ Ready at ${new Date(S.briefData.generatedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>` : ''}
       ${S.briefData ? renderBrief(S.briefData) : ''}
@@ -661,6 +664,8 @@ function bindViewEvents() {
 
   const homeRefresh = document.getElementById('home-refresh');
   if (homeRefresh) homeRefresh.addEventListener('click', () => { loadAll(); toast('Refreshing...'); });
+  const scanBtn = document.getElementById('scan-btn');
+  if (scanBtn) scanBtn.addEventListener('click', captureList);
 
   document.querySelectorAll('[data-contacted]').forEach(btn => {
     btn.addEventListener('click', async ev => {
@@ -1027,6 +1032,185 @@ ${S.calendar.map(ev=>`${ev.allDay?'All day':fmtTime(ev.start)} — ${ev.title}${
 Rio can ask you anything: dig into his brief, get advice, draft a message, prioritize his day, or tell you what to focus on in future briefs. Be direct, specific, action-oriented. No fluff. One clear answer at a time unless he asks for more.`;
 }
 
+// ── List photo scan ───────────────────────────────────────────────────────────
+function captureList() {
+  document.getElementById('list-photo').click();
+}
+
+async function processListPhoto(file) {
+  showModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Reading your list...</div>
+    <div class="list-scan-loading">Willie is reading your handwriting...</div>
+  `, null);
+
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const fcitNames = S.fcit.map(e => e.name).filter(Boolean).join(', ');
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
+            { type: 'text', text: `Extract every to-do item from this handwritten list.
+
+Pipeline contacts (FCIT): ${fcitNames || 'none yet'}
+Creative projects: ${PROJECTS.join(', ')}
+
+Return a JSON array, one object per item:
+[{"task":"string","category":"OPF|Creative","priority":"high|medium|low","project":"string","fcitMatch":"string"}]
+
+Rules:
+- category "Creative" = writing, storytelling, poetry, fiction. Match project to: ${PROJECTS.join(' / ')}
+- category "OPF" = everything else (ops, admin, finance, meetings, follow-ups, calls)
+- priority: high if urgent/starred/underlined/circled, medium by default, low if vague/future
+- project: matching project name if Creative, else ""
+- fcitMatch: if task clearly names a pipeline contact, put their name; else ""
+- Return ONLY the JSON array, no other text` },
+          ],
+        }],
+      }),
+    });
+
+    const data = await resp.json();
+    const raw = data.content?.[0]?.text || '[]';
+    let items;
+    try {
+      const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+      items = JSON.parse(match ? match[1].trim() : raw.trim());
+      if (!Array.isArray(items)) throw new Error('not an array');
+    } catch {
+      toast('Could not parse list — try a clearer photo');
+      closeModal();
+      return;
+    }
+    showListReview(items);
+  } catch (err) {
+    toast('Scan failed: ' + err.message);
+    closeModal();
+  }
+}
+
+function showListReview(items) {
+  if (!items.length) {
+    toast('No tasks found in photo');
+    closeModal();
+    return;
+  }
+
+  const updateSaveBtn = () => {
+    const saveBtn = document.getElementById('list-save');
+    if (!saveBtn) return;
+    const skips = [...document.querySelectorAll('.list-cat-select')].filter(s => s.value === 'Skip').length;
+    const saving = document.querySelectorAll('.list-review-item').length - skips;
+    saveBtn.textContent = saving > 0 ? `Save ${saving} task${saving !== 1 ? 's' : ''}` : 'Nothing to save';
+    saveBtn.disabled = saving === 0;
+  };
+
+  showModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Willie read ${items.length} item${items.length !== 1 ? 's' : ''}</div>
+    <div id="list-review-items">
+      ${items.map(listItemHTML).join('')}
+    </div>
+    <div class="form-actions" style="position:sticky;bottom:0;background:var(--s1);padding-top:12px;margin-top:4px">
+      <button class="btn-save" id="list-save">Save ${items.length} task${items.length !== 1 ? 's' : ''}</button>
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+    </div>
+  `, () => {
+    document.querySelectorAll('.list-cat-select').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const item = sel.closest('.list-review-item');
+        item.querySelector('.list-project-select').style.display = sel.value === 'Creative' ? 'block' : 'none';
+        updateSaveBtn();
+      });
+    });
+    document.querySelectorAll('.list-review-remove').forEach(btn => {
+      btn.addEventListener('click', () => { btn.closest('.list-review-item').remove(); updateSaveBtn(); });
+    });
+    document.getElementById('list-save').addEventListener('click', saveListItems);
+  });
+}
+
+function listItemHTML(item) {
+  const isCreative = item.category === 'Creative';
+  const projectOptions = PROJECTS.map(p =>
+    `<option value="${escA(p)}"${item.project === p ? ' selected' : ''}>${esc(p)}</option>`
+  ).join('');
+  return `
+    <div class="list-review-item">
+      <div class="list-review-remove">✕</div>
+      <input class="field-input" data-field="task" value="${escA(item.task)}" style="padding-right:38px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <select class="field-select list-cat-select" data-field="category" style="flex:1">
+          <option value="OPF"${!isCreative ? ' selected' : ''}>OPF</option>
+          <option value="Creative"${isCreative ? ' selected' : ''}>Creative</option>
+          <option value="Skip">Skip</option>
+        </select>
+        <select class="field-select" data-field="priority" style="flex:1">
+          <option value="high"${item.priority === 'high' ? ' selected' : ''}>High</option>
+          <option value="medium"${item.priority === 'medium' || !item.priority ? ' selected' : ''}>Medium</option>
+          <option value="low"${item.priority === 'low' ? ' selected' : ''}>Low</option>
+        </select>
+      </div>
+      <select class="field-select list-project-select" data-field="project" style="display:${isCreative ? 'block' : 'none'};margin-bottom:8px">
+        ${projectOptions}
+      </select>
+      ${item.fcitMatch ? `<div class="list-fcit-badge">◈ Relates to ${esc(item.fcitMatch)} in your pipeline</div>` : ''}
+    </div>`;
+}
+
+async function saveListItems() {
+  if (!S.token) { toast('Connect Google to save'); return; }
+  const saveBtn = document.getElementById('list-save');
+  if (saveBtn) saveBtn.disabled = true;
+
+  const opfRows = [], creativeRows = [];
+  document.querySelectorAll('.list-review-item').forEach(el => {
+    const task     = el.querySelector('[data-field="task"]')?.value?.trim();
+    const category = el.querySelector('[data-field="category"]')?.value;
+    const priority = el.querySelector('[data-field="priority"]')?.value || 'medium';
+    const project  = el.querySelector('[data-field="project"]')?.value || PROJECTS[0];
+    if (!task || category === 'Skip') return;
+    if (category === 'Creative') creativeRows.push([project, task, priority, '', 'todo', '']);
+    else opfRows.push([task, '', priority, '', 'todo', '']);
+  });
+
+  const total = opfRows.length + creativeRows.length;
+  if (!total) { closeModal(); return; }
+
+  try {
+    const saves = [];
+    if (opfRows.length)     saves.push(shAppend('OPF!A:F', opfRows));
+    if (creativeRows.length) saves.push(shAppend('Creative!A:F', creativeRows));
+    await Promise.all(saves);
+    await Promise.all([loadOPF(), loadCreative()]);
+    closeModal();
+    toast(`Saved ${total} task${total !== 1 ? 's' : ''}`);
+    renderView();
+  } catch (err) {
+    toast('Save failed: ' + err.message);
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
 // ── Utils ─────────────────────────────────────────────────────────────────────
 function v(id)   { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
 function enc(s)  { return encodeURIComponent(s); }
@@ -1051,5 +1235,9 @@ window.addEventListener('load', () => {
   }
   renderView();
   initAuth();
+  document.getElementById('list-photo').addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    if (file) { processListPhoto(file); e.target.value = ''; }
+  });
   if ('serviceWorker' in navigator && location.hostname !== 'localhost') navigator.serviceWorker.register('./sw.js').catch(console.error);
 });
