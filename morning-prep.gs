@@ -38,7 +38,7 @@ function getRecentEmails() {
       return {
         from:    msg.getFrom(),
         subject: msg.getSubject(),
-        date:    msg.getDate().toISOString(),
+        date:    Utilities.formatDate(msg.getDate(), 'America/Los_Angeles', 'EEE MMM d, h:mm a z'),
         body:    msg.getPlainBody().slice(0, 3000),
         link:    `https://mail.google.com/mail/u/0/#inbox/${thread.getId()}`,
       };
@@ -56,7 +56,7 @@ function getTodaysEvents() {
       const meetLink = meetMatch ? meetMatch[0] : (ev.getLocation() || '');
       return {
         title:     ev.getTitle(),
-        start:     ev.getStartTime().toISOString(),
+        start:     Utilities.formatDate(ev.getStartTime(), 'America/Los_Angeles', 'h:mm a z'),
         allDay:    ev.isAllDayEvent(),
         attendees: ev.getGuestList().map(g => g.getName() || g.getEmail()),
         link:      meetLink,
