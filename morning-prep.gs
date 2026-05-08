@@ -38,7 +38,7 @@ function getRecentEmails() {
       return {
         from:    msg.getFrom(),
         subject: msg.getSubject(),
-        date:    msg.getDate().toISOString(),
+        date:    Utilities.formatDate(msg.getDate(), 'America/Los_Angeles', 'EEE MMM d, h:mm a z'),
         body:    msg.getPlainBody().slice(0, 3000),
         link:    `https://mail.google.com/mail/u/0/#inbox/${thread.getId()}`,
       };
@@ -56,7 +56,7 @@ function getTodaysEvents() {
       const meetLink = meetMatch ? meetMatch[0] : (ev.getLocation() || '');
       return {
         title:     ev.getTitle(),
-        start:     ev.getStartTime().toISOString(),
+        start:     Utilities.formatDate(ev.getStartTime(), 'America/Los_Angeles', 'h:mm a z'),
         allDay:    ev.isAllDayEvent(),
         attendees: ev.getGuestList().map(g => g.getName() || g.getEmail()),
         link:      meetLink,
@@ -168,12 +168,12 @@ function saveToSheet(brief) {
 // ── Schedule — run once manually to set up the daily trigger ─────────────────
 function createTrigger() {
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
-  // 13:30 UTC = 5:30 AM Pacific Standard / 6:30 AM Pacific Daylight
+  // atHour() uses the script's project timezone (America/Los_Angeles), so 5 = 5:30 AM Pacific
   ScriptApp.newTrigger('runMorningPrep')
     .timeBased()
-    .atHour(13)
+    .atHour(5)
     .nearMinute(30)
     .everyDays(1)
     .create();
-  Logger.log('Trigger created: runMorningPrep daily at 13:30 UTC (5:30 AM PST)');
+  Logger.log('Trigger created: runMorningPrep daily at 5:30 AM Pacific');
 }
