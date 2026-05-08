@@ -168,12 +168,12 @@ function saveToSheet(brief) {
 // ── Schedule — run once manually to set up the daily trigger ─────────────────
 function createTrigger() {
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
-  // 13:30 UTC = 5:30 AM Pacific Standard / 6:30 AM Pacific Daylight
+  // atHour() uses the script's project timezone (America/Los_Angeles), so 5 = 5:30 AM Pacific
   ScriptApp.newTrigger('runMorningPrep')
     .timeBased()
-    .atHour(13)
+    .atHour(5)
     .nearMinute(30)
     .everyDays(1)
     .create();
-  Logger.log('Trigger created: runMorningPrep daily at 13:30 UTC (5:30 AM PST)');
+  Logger.log('Trigger created: runMorningPrep daily at 5:30 AM Pacific');
 }
