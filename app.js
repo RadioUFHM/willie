@@ -24,6 +24,7 @@ const S = {
   briefData: null,
   briefSource: null,
   chatHistory: [],
+  chatIntro: '',
   news: { ethPrice: null },
   filter: { contacts: 'all', todos: 'all' },
 };
@@ -845,22 +846,26 @@ async function getAnthropicKey() {
 }
 
 // ── Willie Chat ───────────────────────────────────────────────────────────────
-function openWillieChat() {
-  if (!S.chatHistory.length) {
+async function openWillieChat() {
+  const key = await getAnthropicKey();
+  if (!key) return;
+
+  if (!S.chatIntro) {
     const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
     const stale = S.contacts.filter(e => e.stage !== 'closed' && daysSince(e.lastContact) >= 7);
     const due   = S.todos.filter(e => e.status !== 'done' && e.dueDate && e.dueDate <= todays()).length;
-    const intro = S.briefData
+    S.chatIntro = S.briefData
       ? `Good ${greeting().split(' ')[1].toLowerCase()}, Rio. Brief is ready — ${S.briefData.calendar?.length || 0} calendar item${S.briefData.calendar?.length !== 1 ? 's' : ''}, ${S.briefData.email?.length || 0} email${S.briefData.email?.length !== 1 ? 's' : ''} worth your attention${due ? `, ${due} task${due !== 1 ? 's' : ''} due today` : ''}${stale.length ? `, ${stale.length} stale contact${stale.length !== 1 ? 's' : ''}` : ''}. What do you want to dig into?`
       : `Hey Rio — no brief loaded yet. What's on your mind?`;
-    S.chatHistory.push({ role: 'assistant', content: intro });
   }
+
+  const introHTML = `<div class="chat-msg chat-msg-assistant"><div class="chat-msg-label">Willie</div><div class="chat-msg-text">${esc(S.chatIntro)}</div></div>`;
 
   showModal(`
     <div class="modal-handle"></div>
     <div class="chat-header"><div class="chat-title">✦ Willie</div></div>
     <div class="chat-messages" id="chat-msgs">
-      ${S.chatHistory.map(chatMsgHTML).join('')}
+      ${introHTML}${S.chatHistory.map(chatMsgHTML).join('')}
     </div>
     <div class="chat-input-row">
       <div class="voice-wrap" style="flex:1">
@@ -897,7 +902,7 @@ function scrollChatToBottom() {
 }
 
 async function sendWillieMessage() {
-  const key = await getAnthropicKey();
+  const key = localStorage.getItem('willie_anthropic_key');
   if (!key) return;
   const input = document.getElementById('chat-input');
   const send  = document.getElementById('chat-send');
@@ -937,13 +942,13 @@ async function sendWillieMessage() {
       }),
     });
     const data = await resp.json();
-    const reply = data.content?.[0]?.text || 'Something went wrong — try again.';
+    const reply = data.content?.[0]?.text || `API error: ${data.error?.message || resp.status}`;
     S.chatHistory.push({ role: 'assistant', content: reply });
     const el = document.getElementById(tid);
     if (el) el.outerHTML = chatMsgHTML({ role: 'assistant', content: reply });
   } catch (err) {
     const el = document.getElementById(tid);
-    if (el) el.outerHTML = chatMsgHTML({ role: 'assistant', content: 'Connection error — try again.' });
+    if (el) el.outerHTML = chatMsgHTML({ role: 'assistant', content: `Error: ${err.message}` });
   } finally {
     if (send) send.disabled = false;
     scrollChatToBottom();
