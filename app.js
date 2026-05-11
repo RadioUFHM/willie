@@ -813,6 +813,37 @@ function voice(fieldId, btnId) {
   recognition.start();
 }
 
+// ── Anthropic key (stored in localStorage, never in repo) ────────────────────
+function promptAnthropicKey() {
+  return new Promise(resolve => {
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Anthropic API Key</div>
+      <div class="field-group">
+        <label class="field-label">Paste your key from console.anthropic.com</label>
+        <input class="field-input" id="ak-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off">
+      </div>
+      <div class="form-actions">
+        <button class="btn-secondary" id="ak-cancel">Cancel</button>
+        <button class="btn-primary" id="ak-save">Save & Continue</button>
+      </div>
+    `, () => {
+      document.getElementById('ak-cancel').addEventListener('click', () => { closeModal(); resolve(null); });
+      document.getElementById('ak-save').addEventListener('click', () => {
+        const key = document.getElementById('ak-input').value.trim();
+        if (!key.startsWith('sk-ant-')) { toast('Invalid key — must start with sk-ant-'); return; }
+        localStorage.setItem('willie_anthropic_key', key);
+        closeModal();
+        resolve(key);
+      });
+    });
+  });
+}
+
+async function getAnthropicKey() {
+  return localStorage.getItem('willie_anthropic_key') || await promptAnthropicKey();
+}
+
 // ── Willie Chat ───────────────────────────────────────────────────────────────
 function openWillieChat() {
   if (!S.chatHistory.length) {
@@ -866,6 +897,8 @@ function scrollChatToBottom() {
 }
 
 async function sendWillieMessage() {
+  const key = await getAnthropicKey();
+  if (!key) return;
   const input = document.getElementById('chat-input');
   const send  = document.getElementById('chat-send');
   const msg = input.value.trim();
@@ -891,7 +924,7 @@ async function sendWillieMessage() {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'x-api-key': key,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
         'Content-Type': 'application/json',
@@ -944,6 +977,9 @@ function captureList() {
 }
 
 async function processListPhoto(file) {
+  const key = await getAnthropicKey();
+  if (!key) return;
+
   showModal(`
     <div class="modal-handle"></div>
     <div class="modal-title">Reading your list...</div>
@@ -963,7 +999,7 @@ async function processListPhoto(file) {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'x-api-key': key,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
         'Content-Type': 'application/json',
