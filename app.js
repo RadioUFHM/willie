@@ -1,4 +1,8 @@
-const PROJECTS = ['Troopers', 'Elf Realm', 'Poetry', "Children's Books"];
+const CONTEXTS_TODO    = ['FCIT', 'OPF', 'HRE', 'Creative'];
+const CONTEXTS_CONTACT = ['FCIT', 'HRE', 'OPF'];
+const STAGES           = ['prospect', 'warm', 'proposal', 'closed'];
+const PRIORITIES       = ['high', 'medium', 'low'];
+const STATUSES         = ['todo', 'in-progress', 'done', 'blocked'];
 
 const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
@@ -11,15 +15,17 @@ const S = {
   view: 'home',
   token: null,
   tokenClient: null,
-  fcit: [], opf: [], creative: [],
+  contacts: [],
+  todos: [],
   gmail: { unread: [], starred: [], pipeline: [] },
   gmailError: null,
   calendar: [],
   contextDoc: '',
   briefData: null,
+  briefSource: null,
   chatHistory: [],
   news: { ethPrice: null },
-  filter: { fcit: 'all', opf: 'all', creative: 'all' },
+  filter: { contacts: 'all', todos: 'all' },
 };
 
 // ── Date/Time ─────────────────────────────────────────────────────────────────
@@ -95,6 +101,7 @@ async function shAppend(range, values) {
     headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' },
     body: JSON.stringify({ values }),
   });
+  if (r.status === 401) { on401(); throw new Error('auth'); }
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -104,6 +111,7 @@ async function shPut(range, values) {
     headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' },
     body: JSON.stringify({ values }),
   });
+  if (r.status === 401) { on401(); throw new Error('auth'); }
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -124,6 +132,7 @@ async function gmailSearch(q, max) {
     if (!ids.length) return [];
     return (await Promise.all(ids.map(gmailMeta))).filter(Boolean);
   } catch (e) {
+    if (e.message === 'auth') return [];
     console.error('Gmail search failed:', e.message, '\nQuery:', q);
     S.gmailError = e.message;
     return [];
@@ -152,10 +161,10 @@ async function gmailMeta(id) {
 }
 
 async function loadGmail() {
-  const unread   = await gmailSearch('is:unread newer_than:1d label:inbox -category:promotions -category:social', 8);
-  const starred  = await gmailSearch('is:starred is:unread', 5);
-  const names    = S.fcit.map(e => e.name).filter(Boolean).slice(0, 15);
-  let pipeline   = [];
+  const unread  = await gmailSearch('is:unread newer_than:1d label:inbox -category:promotions -category:social', 8);
+  const starred = await gmailSearch('is:starred is:unread', 5);
+  const names   = S.contacts.map(e => e.name).filter(Boolean).slice(0, 15);
+  let pipeline  = [];
   if (names.length) {
     pipeline = await gmailSearch(`from:(${names.map(n => `"${n}"`).join(' OR ')}) newer_than:7d`, 5);
   }
@@ -212,7 +221,7 @@ async function loadEthPrice() {
 
 // ── Load all ──────────────────────────────────────────────────────────────────
 async function loadAll() {
-  await Promise.all([loadFCIT(), loadOPF(), loadCreative()]);
+  await Promise.all([loadContacts(), loadTodos()]);
   await Promise.all([loadGmail(), loadCalendar(), loadContextDoc(), loadPrecomputedBrief(), loadEthPrice()]);
   renderView();
 }
@@ -224,68 +233,55 @@ async function loadPrecomputedBrief() {
     if (!rows[0]?.[0]) return;
     const brief = JSON.parse(rows[0][0]);
     const generatedAt = new Date(rows[1]?.[0] || brief.generatedAt);
+    if (isNaN(generatedAt.getTime())) { console.warn('loadPrecomputedBrief: invalid timestamp, skipping'); return; }
     const ageHours = (Date.now() - generatedAt) / 3600000;
     if (ageHours < 20) {
-      S.briefData = injectCalendarLinks(brief);
+      S.briefData = brief;
       S.briefSource = 'precomputed';
     }
   } catch (e) { console.error('loadPrecomputedBrief:', e); }
 }
 
 // ── Sheet loaders ─────────────────────────────────────────────────────────────
-async function loadFCIT() {
+// Homies sheet: A:Name B:Org C:Stage D:LastContact E:NextAction F:DueDate G:Notes H:Context I:HubSpotURL
+async function loadContacts() {
   try {
-    const d = await shGet('FCIT!A1:G500');
-    S.fcit = (d.values || []).slice(1).map((r, i) => ({
+    const d = await shGet('Homies!A1:I500');
+    S.contacts = (d.values || []).slice(1).map((r, i) => ({
       ri: i + 2, name: r[0]||'', org: r[1]||'', stage: (r[2]||'prospect').toLowerCase(),
       lastContact: r[3]||'', nextAction: r[4]||'', dueDate: r[5]||'', notes: r[6]||'',
+      context: r[7]||'', hubspotUrl: r[8]||'',
     })).filter(e => e.name);
-  } catch (e) { console.error('FCIT:', e); }
+  } catch (e) { console.error('Contacts:', e); }
 }
 
-async function loadOPF() {
+// ToDo sheet: A:Task B:Category(ignored) C:Priority D:DueDate E:Status F:Context
+async function loadTodos() {
   try {
-    const d = await shGet('OPF!A1:F500');
-    S.opf = (d.values || []).slice(1).map((r, i) => ({
-      ri: i + 2, task: r[0]||'', category: r[1]||'', priority: (r[2]||'medium').toLowerCase(),
-      dueDate: r[3]||'', status: (r[4]||'todo').toLowerCase(), notes: r[5]||'',
+    const d = await shGet('ToDo!A1:F500');
+    S.todos = (d.values || []).slice(1).map((r, i) => ({
+      ri: i + 2, task: r[0]||'', priority: (r[2]||'medium').toLowerCase(),
+      dueDate: r[3]||'', status: (r[4]||'todo').toLowerCase(), context: r[5]||'',
     })).filter(e => e.task);
-  } catch (e) { console.error('OPF:', e); }
-}
-
-async function loadCreative() {
-  try {
-    const d = await shGet('Creative!A1:F500');
-    S.creative = (d.values || []).slice(1).map((r, i) => ({
-      ri: i + 2, project: r[0]||PROJECTS[0], task: r[1]||'', priority: (r[2]||'medium').toLowerCase(),
-      dueDate: r[3]||'', status: (r[4]||'todo').toLowerCase(), notes: r[5]||'',
-    })).filter(e => e.task);
-  } catch (e) { console.error('Creative:', e); }
+  } catch (e) { console.error('ToDo:', e); }
 }
 
 // ── Saves / Deletes ───────────────────────────────────────────────────────────
-async function saveFCIT(e, isNew) {
-  const row = [e.name, e.org, e.stage, e.lastContact, e.nextAction, e.dueDate, e.notes];
-  if (isNew) await shAppend('FCIT!A:G', [row]); else await shPut(`FCIT!A${e.ri}:G${e.ri}`, [row]);
-  await loadFCIT();
+async function saveContact(e, isNew) {
+  const row = [e.name, e.org, e.stage, e.lastContact, e.nextAction, e.dueDate, e.notes, e.context, e.hubspotUrl];
+  if (isNew) await shAppend('Homies!A:I', [row]); else await shPut(`Homies!A${e.ri}:I${e.ri}`, [row]);
+  await loadContacts();
 }
-async function delFCIT(e)  { await shClear(`FCIT!A${e.ri}:G${e.ri}`);  await loadFCIT(); }
+async function delContact(e) { await shClear(`Homies!A${e.ri}:I${e.ri}`); await loadContacts(); }
 
-async function saveOPF(e, isNew) {
-  const row = [e.task, e.category, e.priority, e.dueDate, e.status, e.notes];
-  if (isNew) await shAppend('OPF!A:F', [row]); else await shPut(`OPF!A${e.ri}:F${e.ri}`, [row]);
-  await loadOPF();
+async function saveTodo(e, isNew) {
+  const row = [e.task, '', e.priority, e.dueDate, e.status, e.context];
+  if (isNew) await shAppend('ToDo!A:F', [row]); else await shPut(`ToDo!A${e.ri}:F${e.ri}`, [row]);
+  await loadTodos();
 }
-async function delOPF(e)   { await shClear(`OPF!A${e.ri}:F${e.ri}`);   await loadOPF(); }
+async function delTodo(e) { await shClear(`ToDo!A${e.ri}:F${e.ri}`); await loadTodos(); }
 
-async function saveCreative(e, isNew) {
-  const row = [e.project, e.task, e.priority, e.dueDate, e.status, e.notes];
-  if (isNew) await shAppend('Creative!A:F', [row]); else await shPut(`Creative!A${e.ri}:F${e.ri}`, [row]);
-  await loadCreative();
-}
-async function delCreative(e) { await shClear(`Creative!A${e.ri}:F${e.ri}`); await loadCreative(); }
-
-
+// ── Brief helpers ─────────────────────────────────────────────────────────────
 function injectCalendarLinks(brief) {
   if (!brief?.calendar?.length || !S.calendar.length) return brief;
   brief.calendar = brief.calendar.map(item => {
@@ -343,20 +339,20 @@ function navigate(v) {
 function renderView() {
   const el = document.getElementById('view');
   switch (S.view) {
-    case 'home':     el.innerHTML = homeHTML();     break;
-    case 'fcit':     el.innerHTML = fcitHTML();     break;
-    case 'opf':      el.innerHTML = opfHTML();      break;
-    case 'creative': el.innerHTML = creativeHTML(); break;
+    case 'home':    el.innerHTML = homeHTML();    break;
+    case 'todos':   el.innerHTML = todosHTML();   break;
+    case 'homies':  el.innerHTML = homiesHTML();  break;
   }
   bindViewEvents();
 }
 
-// ── Home ──────────────────────────────────────────────────────────────────────
+// ── Home / Brief ──────────────────────────────────────────────────────────────
 function homeHTML() {
-  const followUps     = S.fcit.filter(e => e.dueDate && e.dueDate <= todays()).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
-  const opfActive     = S.opf.filter(e => e.status !== 'done').length;
-  const creativeActive = S.creative.filter(e => e.status !== 'done').length;
-  const emailCount    = S.gmail.unread.length + S.gmail.starred.length + S.gmail.pipeline.length;
+  const followUps  = S.contacts
+    .filter(e => e.dueDate && e.dueDate <= todays() && e.stage !== 'closed')
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const todosActive = S.todos.filter(e => e.status !== 'done').length;
+  const emailCount  = S.gmail.unread.length + S.gmail.starred.length + S.gmail.pipeline.length;
 
   return `
     <div class="home-header">
@@ -371,29 +367,25 @@ function homeHTML() {
     </div>
 
     <div class="stat-row">
-      <div class="stat-chip" data-nav="fcit">
-        <div class="stat-num">${S.fcit.length}</div>
-        <div class="stat-label">FCIT</div>
+      <div class="stat-chip" data-nav="homies">
+        <div class="stat-num">${S.contacts.length}</div>
+        <div class="stat-label">Homies</div>
       </div>
-      <div class="stat-chip" data-nav="opf">
-        <div class="stat-num">${opfActive}</div>
-        <div class="stat-label">OPF</div>
-      </div>
-      <div class="stat-chip" data-nav="creative">
-        <div class="stat-num">${creativeActive}</div>
-        <div class="stat-label">Creative</div>
+      <div class="stat-chip" data-nav="todos">
+        <div class="stat-num">${todosActive}</div>
+        <div class="stat-label">To-Do</div>
       </div>
     </div>
 
     ${!S.token ? authBanner() : ''}
 
     <div class="action-row">
-      <button class="willie-btn" id="wb" onclick="openWillieChat()">✦ Say Hey, Willie</button>
+      <button class="willie-btn" id="wb">✦ Say Hey, Willie</button>
       <button class="scan-btn" id="scan-btn" title="Scan to-do list">📷</button>
     </div>
     <div class="brief-area" id="ba"${S.briefData ? '' : ' style="display:none"'}>
       ${S.briefData && S.briefSource === 'precomputed' ? `<div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.08em">✦ Ready at ${new Date(S.briefData.generatedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>` : ''}
-      ${S.briefData ? renderBrief(S.briefData) : ''}
+      ${S.briefData ? renderBrief(injectCalendarLinks(S.briefData)) : ''}
     </div>
 
     <div class="section">
@@ -424,7 +416,7 @@ function homeHTML() {
         : `
           ${S.gmail.unread.length ? `<div class="signal-label">Recent unread</div>${S.gmail.unread.map(emailRowHTML).join('')}` : ''}
           ${S.gmail.starred.length ? `<div class="signal-label">Starred</div>${S.gmail.starred.map(emailRowHTML).join('')}` : ''}
-          ${S.gmail.pipeline.length ? `<div class="signal-label">From pipeline</div>${S.gmail.pipeline.map(emailRowHTML).join('')}` : ''}
+          ${S.gmail.pipeline.length ? `<div class="signal-label">From contacts</div>${S.gmail.pipeline.map(emailRowHTML).join('')}` : ''}
         `}
     </div>
 
@@ -433,9 +425,13 @@ function homeHTML() {
       ${followUps.length === 0
         ? `<div class="dim-note">${S.token ? 'Clear board.' : 'Connect Google to see your queue.'}</div>`
         : followUps.map(e => `
-          <div class="followup-card" data-fcit-row="${e.ri}">
+          <div class="followup-card" data-contact-row="${e.ri}">
             <div class="followup-name">${esc(e.name)}</div>
-            <div class="followup-org">${esc(e.org)}${e.stage ? `<span class="badge badge-${e.stage}">${e.stage}</span>` : ''}</div>
+            <div class="followup-org">
+              ${esc(e.org)}
+              ${e.context ? `<span class="context-tag ct-${e.context.toLowerCase()}">${esc(e.context)}</span>` : ''}
+              ${e.stage ? `<span class="badge badge-${e.stage}">${e.stage}</span>` : ''}
+            </div>
             ${e.nextAction ? `<div class="followup-action">${esc(e.nextAction)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ Overdue · ':dueStat(e.dueDate)==='today'?'◈ Today · ':''}${fmtDate(e.dueDate)}</div>` : ''}
           </div>`).join('')}
@@ -491,13 +487,13 @@ function newsHTML() {
     </div>`;
 }
 
-// ── FCIT view ─────────────────────────────────────────────────────────────────
-function fcitHTML() {
-  const f = S.filter.fcit;
+// ── Homies view ───────────────────────────────────────────────────────────────
+function homiesHTML() {
+  const f = S.filter.contacts;
   const t = todays();
   const stagePri = {proposal:0, warm:1, prospect:2, closed:3};
-  const items = S.fcit
-    .filter(e => f === 'all' || e.stage === f)
+  const items = S.contacts
+    .filter(e => f === 'all' || e.context === f)
     .sort((a, b) => {
       const aUrgent = a.dueDate && a.dueDate <= t ? 0 : 1;
       const bUrgent = b.dueDate && b.dueDate <= t ? 0 : 1;
@@ -506,13 +502,13 @@ function fcitHTML() {
     });
   return `
     <div class="page-header">
-      <div class="page-title">FCIT</div>
-      <button class="btn-icon" id="add-fcit">+</button>
+      <div class="page-title">Homies</div>
+      <button class="btn-icon" id="add-contact">+</button>
     </div>
     ${!S.token ? authBanner() : ''}
     <div class="filters">
-      ${['all','prospect','warm','proposal','closed'].map(s =>
-        `<button class="filter-chip${f===s?' active':''}" data-lane="fcit" data-val="${s}">${s==='all'?'All':cap(s)}</button>`
+      ${['all', ...CONTEXTS_CONTACT].map(s =>
+        `<button class="filter-chip${f===s?' active':''}" data-lane="contacts" data-val="${s}">${s==='all'?'All':s}</button>`
       ).join('')}
     </div>
     <div class="list-items">
@@ -524,21 +520,27 @@ function fcitHTML() {
               <div class="card-name">${esc(e.name)}</div>
               <span class="badge badge-${e.stage}">${e.stage}</span>
             </div>
-            ${e.org ? `<div class="card-sub">${esc(e.org)}</div>` : ''}
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px">
+              ${e.context ? `<span class="context-tag ct-${e.context.toLowerCase()}">${esc(e.context)}</span>` : ''}
+              ${e.org ? `<span class="card-sub" style="margin:0">${esc(e.org)}</span>` : ''}
+            </div>
             ${e.nextAction ? `<div class="card-action">${esc(e.nextAction)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
-            ${e.stage !== 'closed' ? `<div class="card-quick"><button class="quick-btn" data-contacted="${e.ri}">✓ Contacted</button></div>` : ''}
+            ${(e.stage !== 'closed' || e.hubspotUrl) ? `<div class="card-quick">
+              ${e.stage !== 'closed' ? `<button class="quick-btn" data-contacted="${e.ri}">✓ Contacted</button>` : ''}
+              ${e.hubspotUrl ? `<a class="quick-btn hs-link" href="${escA(e.hubspotUrl)}" target="_blank" rel="noopener">HubSpot ↗</a>` : ''}
+            </div>` : ''}
           </div>`).join('')}
     </div>`;
 }
 
-// ── OPF view ──────────────────────────────────────────────────────────────────
-function opfHTML() {
-  const f = S.filter.opf;
-  const statusPri = {todo:0,'in-progress':1,blocked:2,done:3};
+// ── To-Do view ────────────────────────────────────────────────────────────────
+function todosHTML() {
+  const f = S.filter.todos;
+  const statusPri  = {todo:0,'in-progress':1,blocked:2,done:3};
   const priorityPri = {high:0,medium:1,low:2};
-  const items = S.opf
-    .filter(e => f === 'all' || e.status === f)
+  const items = S.todos
+    .filter(e => f === 'all' || e.context === f)
     .sort((a, b) => {
       const sd = (statusPri[a.status]??4) - (statusPri[b.status]??4);
       if (sd) return sd;
@@ -549,13 +551,13 @@ function opfHTML() {
     });
   return `
     <div class="page-header">
-      <div class="page-title">OPF</div>
-      <button class="btn-icon" id="add-opf">+</button>
+      <div class="page-title">To-Do</div>
+      <button class="btn-icon" id="add-todo">+</button>
     </div>
     ${!S.token ? authBanner() : ''}
     <div class="filters">
-      ${['all','todo','in-progress','done','blocked'].map(s =>
-        `<button class="filter-chip${f===s?' active':''}" data-lane="opf" data-val="${s}">${s==='all'?'All':cap(s)}</button>`
+      ${['all', ...CONTEXTS_TODO].map(s =>
+        `<button class="filter-chip${f===s?' active':''}" data-lane="todos" data-val="${s}">${s==='all'?'All':s}</button>`
       ).join('')}
     </div>
     <div class="list-items">
@@ -563,52 +565,7 @@ function opfHTML() {
         ? `<div class="empty">${S.token ? 'No tasks yet.<br>Tap + to add one.' : 'Connect Google to load tasks.'}</div>`
         : items.map(e => `
           <div class="card" data-row="${e.ri}">
-            <div class="card-row">
-              <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
-                <div class="dot dot-${e.priority}"></div>
-                <div class="card-name">${esc(e.task)}</div>
-              </div>
-              <span class="badge badge-${e.status}">${e.status}</span>
-            </div>
-            ${e.category ? `<div class="card-sub">${esc(e.category)}</div>` : ''}
-            ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
-            ${e.status !== 'done' ? `<div class="card-quick"><button class="quick-btn done-btn" data-done-row="${e.ri}">✓ Done</button></div>` : ''}
-          </div>`).join('')}
-    </div>`;
-}
-
-// ── Creative view ─────────────────────────────────────────────────────────────
-function creativeHTML() {
-  const f = S.filter.creative;
-  const statusPri = {todo:0,'in-progress':1,blocked:2,done:3};
-  const priorityPri = {high:0,medium:1,low:2};
-  const items = S.creative
-    .filter(e => f === 'all' || e.project === f)
-    .sort((a, b) => {
-      const sd = (statusPri[a.status]??4) - (statusPri[b.status]??4);
-      if (sd) return sd;
-      const pd = (priorityPri[a.priority]??3) - (priorityPri[b.priority]??3);
-      if (pd) return pd;
-      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
-      return a.dueDate ? -1 : b.dueDate ? 1 : 0;
-    });
-  return `
-    <div class="page-header">
-      <div class="page-title">Creative</div>
-      <button class="btn-icon" id="add-creative">+</button>
-    </div>
-    ${!S.token ? authBanner() : ''}
-    <div class="filters">
-      ${['all', ...PROJECTS].map(s =>
-        `<button class="filter-chip${f===s?' active':''}" data-lane="creative" data-proj="${escA(s)}">${s==='all'?'All':esc(s)}</button>`
-      ).join('')}
-    </div>
-    <div class="list-items">
-      ${items.length === 0
-        ? `<div class="empty">${S.token ? 'No tasks yet.<br>Tap + to add one.' : 'Connect Google to load tasks.'}</div>`
-        : items.map(e => `
-          <div class="card" data-row="${e.ri}">
-            <div class="project-tag">${esc(e.project)}</div>
+            ${e.context ? `<span class="context-tag ct-${e.context.toLowerCase()}">${esc(e.context)}</span>` : ''}
             <div class="card-row">
               <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
                 <div class="dot dot-${e.priority}"></div>
@@ -628,11 +585,7 @@ function bindViewEvents() {
 
   document.querySelectorAll('.filter-chip').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.proj !== undefined) {
-        S.filter.creative = btn.dataset.proj === 'all' ? 'all' : btn.dataset.proj;
-      } else {
-        S.filter[btn.dataset.lane] = btn.dataset.val;
-      }
+      S.filter[btn.dataset.lane] = btn.dataset.val;
       renderView();
     });
   });
@@ -640,32 +593,35 @@ function bindViewEvents() {
   document.querySelectorAll('.card[data-row]').forEach(card => {
     const ri = parseInt(card.dataset.row, 10);
     card.addEventListener('click', () => {
-      if (v === 'fcit')     openFCIT(ri);
-      else if (v === 'opf') openOPF(ri);
-      else                  openCreative(ri);
+      if (v === 'homies')     openContact(ri);
+      else if (v === 'todos') openTodo(ri);
     });
   });
 
-  document.querySelectorAll('.followup-card[data-fcit-row]').forEach(card => {
-    const ri = parseInt(card.dataset.fcitRow, 10);
-    card.addEventListener('click', () => { navigate('fcit'); setTimeout(() => openFCIT(ri), 60); });
+  document.querySelectorAll('.hs-link').forEach(link => {
+    link.addEventListener('click', e => e.stopPropagation());
+  });
+
+  document.querySelectorAll('.followup-card[data-contact-row]').forEach(card => {
+    const ri = parseInt(card.dataset.contactRow, 10);
+    card.addEventListener('click', () => { navigate('homies'); setTimeout(() => openContact(ri), 60); });
   });
 
   document.querySelectorAll('.stat-chip[data-nav]').forEach(chip => {
     chip.addEventListener('click', () => navigate(chip.dataset.nav));
   });
 
-  const addFcit = document.getElementById('add-fcit');
-  if (addFcit) addFcit.addEventListener('click', () => openFCIT(null));
-  const addOpf = document.getElementById('add-opf');
-  if (addOpf) addOpf.addEventListener('click', () => openOPF(null));
-  const addCreative = document.getElementById('add-creative');
-  if (addCreative) addCreative.addEventListener('click', () => openCreative(null));
+  const addContact = document.getElementById('add-contact');
+  if (addContact) addContact.addEventListener('click', () => openContact(null));
+  const addTodo = document.getElementById('add-todo');
+  if (addTodo) addTodo.addEventListener('click', () => openTodo(null));
 
   const homeRefresh = document.getElementById('home-refresh');
   if (homeRefresh) homeRefresh.addEventListener('click', () => { loadAll(); toast('Refreshing...'); });
   const scanBtn = document.getElementById('scan-btn');
   if (scanBtn) scanBtn.addEventListener('click', captureList);
+  const wb = document.getElementById('wb');
+  if (wb) wb.addEventListener('click', openWillieChat);
 
   document.querySelectorAll('[data-contacted]').forEach(btn => {
     btn.addEventListener('click', async ev => {
@@ -679,35 +635,29 @@ function bindViewEvents() {
     btn.addEventListener('click', async ev => {
       ev.stopPropagation();
       const ri = parseInt(btn.dataset.doneRow, 10);
-      await markTaskDone(v === 'opf' ? 'opf' : 'creative', ri);
+      await markTaskDone(ri);
     });
   });
 }
 
 // ── Quick actions ─────────────────────────────────────────────────────────────
 async function markContacted(ri) {
-  const e = S.fcit.find(x => x.ri === ri);
+  const e = S.contacts.find(x => x.ri === ri);
   if (!e) return;
   if (!S.token) { toast('Connect Google to save'); return; }
-  try { await saveFCIT({...e, lastContact: todays()}, false); renderView(); toast('Marked contacted'); }
-  catch (err) { toast('Failed: ' + err.message); }
+  try { await saveContact({...e, lastContact: todays()}, false); renderView(); toast('Marked contacted'); }
+  catch (err) { if (err.message !== 'auth') toast('Failed: ' + err.message); }
 }
 
-async function markTaskDone(view, ri) {
+async function markTaskDone(ri) {
   if (!S.token) { toast('Connect Google to save'); return; }
   try {
-    if (view === 'opf') {
-      const e = S.opf.find(x => x.ri === ri);
-      if (!e) return;
-      await saveOPF({...e, status:'done'}, false);
-    } else {
-      const e = S.creative.find(x => x.ri === ri);
-      if (!e) return;
-      await saveCreative({...e, status:'done'}, false);
-    }
+    const e = S.todos.find(x => x.ri === ri);
+    if (!e) return;
+    await saveTodo({...e, status: 'done'}, false);
     renderView();
     toast('Done');
-  } catch (err) { toast('Failed: ' + err.message); }
+  } catch (err) { if (err.message !== 'auth') toast('Failed: ' + err.message); }
 }
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
@@ -742,10 +692,10 @@ function notesField(val) {
   </div>`;
 }
 
-function openFCIT(ri) {
-  const entry = ri ? S.fcit.find(e => e.ri === ri) : null;
+function openContact(ri) {
+  const entry = ri ? S.contacts.find(e => e.ri === ri) : null;
   const isNew = !entry;
-  const e = entry || { ri:null, name:'', org:'', stage:'prospect', lastContact:'', nextAction:'', dueDate:'', notes:'' };
+  const e = entry || { ri:null, name:'', org:'', stage:'prospect', lastContact:'', nextAction:'', dueDate:'', notes:'', context:'FCIT', hubspotUrl:'' };
   showModal(`
     <div class="modal-handle"></div>
     <div class="modal-title">${isNew ? 'Add Contact' : 'Edit Contact'}</div>
@@ -753,9 +703,13 @@ function openFCIT(ri) {
       <input class="field-input" id="fi-name" type="text" value="${escA(e.name)}" placeholder="Full name" autocomplete="name"></div>
     <div class="field"><label class="field-label">Organization</label>
       <input class="field-input" id="fi-org" type="text" value="${escA(e.org)}" placeholder="Company or org"></div>
+    <div class="field"><label class="field-label">Context</label>
+      <select class="field-select" id="fi-context">
+        ${CONTEXTS_CONTACT.map(c => `<option value="${c}"${e.context===c?' selected':''}>${c}</option>`).join('')}
+      </select></div>
     <div class="field"><label class="field-label">Stage</label>
       <select class="field-select" id="fi-stage">
-        ${['prospect','warm','proposal','closed'].map(s => `<option value="${s}"${e.stage===s?' selected':''}>${cap(s)}</option>`).join('')}
+        ${STAGES.map(s => `<option value="${s}"${e.stage===s?' selected':''}>${cap(s)}</option>`).join('')}
       </select></div>
     <div class="field"><label class="field-label">Last Contact</label>
       <input class="field-input" id="fi-last" type="date" value="${escA(e.lastContact)}"></div>
@@ -764,116 +718,72 @@ function openFCIT(ri) {
     <div class="field"><label class="field-label">Due Date</label>
       <input class="field-input" id="fi-due" type="date" value="${escA(e.dueDate)}"></div>
     ${notesField(e.notes)}
+    <div class="field"><label class="field-label">HubSpot URL</label>
+      <input class="field-input" id="fi-hubspot" type="url" value="${escA(e.hubspotUrl)}" placeholder="https://app.hubspot.com/contacts/..."></div>
     ${formActions(isNew)}
   `, () => {
     document.getElementById('vb').addEventListener('click', () => voice('fi-notes', 'vb'));
     document.getElementById('f-save').addEventListener('click', async () => {
-      const data = { ri:e.ri, name:v('fi-name'), org:v('fi-org'), stage:v('fi-stage'),
-        lastContact:v('fi-last'), nextAction:v('fi-action'), dueDate:v('fi-due'), notes:v('fi-notes') };
+      const data = { ri:e.ri, name:v('fi-name'), org:v('fi-org'), context:v('fi-context'),
+        stage:v('fi-stage'), lastContact:v('fi-last'), nextAction:v('fi-action'),
+        dueDate:v('fi-due'), notes:v('fi-notes'), hubspotUrl:v('fi-hubspot') };
       if (!data.name) { toast('Name is required'); return; }
       closeModal();
       if (!S.token) { toast('Connect Google to save'); return; }
-      try { await saveFCIT(data, isNew); renderView(); toast('Saved'); }
-      catch (err) { toast('Save failed: ' + err.message); }
+      try { await saveContact(data, isNew); renderView(); toast('Saved'); }
+      catch (err) { if (err.message !== 'auth') toast('Save failed: ' + err.message); }
     });
     if (!isNew) {
       document.getElementById('f-del').addEventListener('click', async () => {
         if (!confirm('Delete this contact?')) return;
         closeModal();
-        try { await delFCIT(e); renderView(); toast('Deleted'); }
-        catch (err) { toast('Delete failed: ' + err.message); }
+        try { await delContact(e); renderView(); toast('Deleted'); }
+        catch (err) { if (err.message !== 'auth') toast('Delete failed: ' + err.message); }
       });
     }
   });
 }
 
-function openOPF(ri) {
-  const entry = ri ? S.opf.find(e => e.ri === ri) : null;
+function openTodo(ri) {
+  const entry = ri ? S.todos.find(e => e.ri === ri) : null;
   const isNew = !entry;
-  const e = entry || { ri:null, task:'', category:'', priority:'medium', dueDate:'', status:'todo', notes:'' };
+  const e = entry || { ri:null, task:'', context:'OPF', priority:'medium', dueDate:'', status:'todo' };
   showModal(`
     <div class="modal-handle"></div>
     <div class="modal-title">${isNew ? 'Add Task' : 'Edit Task'}</div>
     <div class="field"><label class="field-label">Task</label>
       <input class="field-input" id="fi-task" type="text" value="${escA(e.task)}" placeholder="What needs to be done"></div>
-    <div class="field"><label class="field-label">Category</label>
-      <input class="field-input" id="fi-cat" type="text" value="${escA(e.category)}" placeholder="e.g. Operations, Finance"></div>
+    <div class="field"><label class="field-label">Context</label>
+      <select class="field-select" id="fi-context">
+        ${CONTEXTS_TODO.map(c => `<option value="${c}"${e.context===c?' selected':''}>${c}</option>`).join('')}
+      </select></div>
     <div class="field"><label class="field-label">Priority</label>
       <select class="field-select" id="fi-priority">
-        ${['high','medium','low'].map(p => `<option value="${p}"${e.priority===p?' selected':''}>${cap(p)}</option>`).join('')}
+        ${PRIORITIES.map(p => `<option value="${p}"${e.priority===p?' selected':''}>${cap(p)}</option>`).join('')}
       </select></div>
     <div class="field"><label class="field-label">Due Date</label>
       <input class="field-input" id="fi-due" type="date" value="${escA(e.dueDate)}"></div>
     <div class="field"><label class="field-label">Status</label>
       <select class="field-select" id="fi-status">
-        ${['todo','in-progress','done','blocked'].map(s => `<option value="${s}"${e.status===s?' selected':''}>${cap(s)}</option>`).join('')}
+        ${STATUSES.map(s => `<option value="${s}"${e.status===s?' selected':''}>${cap(s)}</option>`).join('')}
       </select></div>
-    ${notesField(e.notes)}
     ${formActions(isNew)}
   `, () => {
-    document.getElementById('vb').addEventListener('click', () => voice('fi-notes', 'vb'));
     document.getElementById('f-save').addEventListener('click', async () => {
-      const data = { ri:e.ri, task:v('fi-task'), category:v('fi-cat'), priority:v('fi-priority'),
-        dueDate:v('fi-due'), status:v('fi-status'), notes:v('fi-notes') };
+      const data = { ri:e.ri, task:v('fi-task'), context:v('fi-context'), priority:v('fi-priority'),
+        dueDate:v('fi-due'), status:v('fi-status') };
       if (!data.task) { toast('Task is required'); return; }
       closeModal();
       if (!S.token) { toast('Connect Google to save'); return; }
-      try { await saveOPF(data, isNew); renderView(); toast('Saved'); }
-      catch (err) { toast('Save failed: ' + err.message); }
+      try { await saveTodo(data, isNew); renderView(); toast('Saved'); }
+      catch (err) { if (err.message !== 'auth') toast('Save failed: ' + err.message); }
     });
     if (!isNew) {
       document.getElementById('f-del').addEventListener('click', async () => {
         if (!confirm('Delete this task?')) return;
         closeModal();
-        try { await delOPF(e); renderView(); toast('Deleted'); }
-        catch (err) { toast('Delete failed: ' + err.message); }
-      });
-    }
-  });
-}
-
-function openCreative(ri) {
-  const entry = ri ? S.creative.find(e => e.ri === ri) : null;
-  const isNew = !entry;
-  const e = entry || { ri:null, project:PROJECTS[0], task:'', priority:'medium', dueDate:'', status:'todo', notes:'' };
-  showModal(`
-    <div class="modal-handle"></div>
-    <div class="modal-title">${isNew ? 'Add Task' : 'Edit Task'}</div>
-    <div class="field"><label class="field-label">Project</label>
-      <select class="field-select" id="fi-project">
-        ${PROJECTS.map(p => `<option value="${escA(p)}"${e.project===p?' selected':''}>${esc(p)}</option>`).join('')}
-      </select></div>
-    <div class="field"><label class="field-label">Task</label>
-      <input class="field-input" id="fi-task" type="text" value="${escA(e.task)}" placeholder="What needs to be done"></div>
-    <div class="field"><label class="field-label">Priority</label>
-      <select class="field-select" id="fi-priority">
-        ${['high','medium','low'].map(p => `<option value="${p}"${e.priority===p?' selected':''}>${cap(p)}</option>`).join('')}
-      </select></div>
-    <div class="field"><label class="field-label">Due Date</label>
-      <input class="field-input" id="fi-due" type="date" value="${escA(e.dueDate)}"></div>
-    <div class="field"><label class="field-label">Status</label>
-      <select class="field-select" id="fi-status">
-        ${['todo','in-progress','done','blocked'].map(s => `<option value="${s}"${e.status===s?' selected':''}>${cap(s)}</option>`).join('')}
-      </select></div>
-    ${notesField(e.notes)}
-    ${formActions(isNew)}
-  `, () => {
-    document.getElementById('vb').addEventListener('click', () => voice('fi-notes', 'vb'));
-    document.getElementById('f-save').addEventListener('click', async () => {
-      const data = { ri:e.ri, project:v('fi-project'), task:v('fi-task'), priority:v('fi-priority'),
-        dueDate:v('fi-due'), status:v('fi-status'), notes:v('fi-notes') };
-      if (!data.task) { toast('Task is required'); return; }
-      closeModal();
-      if (!S.token) { toast('Connect Google to save'); return; }
-      try { await saveCreative(data, isNew); renderView(); toast('Saved'); }
-      catch (err) { toast('Save failed: ' + err.message); }
-    });
-    if (!isNew) {
-      document.getElementById('f-del').addEventListener('click', async () => {
-        if (!confirm('Delete this task?')) return;
-        closeModal();
-        try { await delCreative(e); renderView(); toast('Deleted'); }
-        catch (err) { toast('Delete failed: ' + err.message); }
+        try { await delTodo(e); renderView(); toast('Deleted'); }
+        catch (err) { if (err.message !== 'auth') toast('Delete failed: ' + err.message); }
       });
     }
   });
@@ -907,10 +817,10 @@ function voice(fieldId, btnId) {
 function openWillieChat() {
   if (!S.chatHistory.length) {
     const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
-    const stale = S.fcit.filter(e => e.stage !== 'closed' && daysSince(e.lastContact) >= 7);
-    const due   = S.opf.filter(e => e.status !== 'done' && e.dueDate && e.dueDate <= todays()).length;
-    const intro  = S.briefData
-      ? `Good ${greeting().split(' ')[1].toLowerCase()}, Rio. Brief is ready — ${S.briefData.calendar?.length || 0} calendar item${S.briefData.calendar?.length !== 1 ? 's' : ''}, ${S.briefData.email?.length || 0} email${S.briefData.email?.length !== 1 ? 's' : ''} worth your attention${due ? `, ${due} task${due !== 1 ? 's' : ''} due today` : ''}${stale.length ? `, ${stale.length} stale pipeline contact${stale.length !== 1 ? 's' : ''}` : ''}. What do you want to dig into?`
+    const stale = S.contacts.filter(e => e.stage !== 'closed' && daysSince(e.lastContact) >= 7);
+    const due   = S.todos.filter(e => e.status !== 'done' && e.dueDate && e.dueDate <= todays()).length;
+    const intro = S.briefData
+      ? `Good ${greeting().split(' ')[1].toLowerCase()}, Rio. Brief is ready — ${S.briefData.calendar?.length || 0} calendar item${S.briefData.calendar?.length !== 1 ? 's' : ''}, ${S.briefData.email?.length || 0} email${S.briefData.email?.length !== 1 ? 's' : ''} worth your attention${due ? `, ${due} task${due !== 1 ? 's' : ''} due today` : ''}${stale.length ? `, ${stale.length} stale contact${stale.length !== 1 ? 's' : ''}` : ''}. What do you want to dig into?`
       : `Hey Rio — no brief loaded yet. What's on your mind?`;
     S.chatHistory.push({ role: 'assistant', content: intro });
   }
@@ -1008,7 +918,6 @@ async function sendWillieMessage() {
 }
 
 function buildWillieContext() {
-  const t = todays();
   const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
   return `You are Willie — Rio Miner's sharp, trusted executive assistant. Today is ${fullDate()}.
 
@@ -1017,14 +926,11 @@ Calendar: ${JSON.stringify(S.briefData.calendar || [])}
 Email: ${JSON.stringify(S.briefData.email || [])}
 Actions: ${JSON.stringify(S.briefData.actions || [])}
 BD move: ${JSON.stringify(S.briefData.bd || {})}
-` : ''}## FCIT Pipeline
-${S.fcit.map(e => `${e.name} (${e.org}) [${e.stage}] last contact: ${e.lastContact||'never'} (${daysSince(e.lastContact)}d ago) next: ${e.nextAction||'—'}`).join('\n') || 'Empty.'}
+` : ''}## Contacts (Homies)
+${S.contacts.map(e => `${e.name} [${e.context||'?'}] (${e.org}) [${e.stage}] last: ${e.lastContact||'never'} (${daysSince(e.lastContact)}d) next: ${e.nextAction||'—'}`).join('\n') || 'Empty.'}
 
-## Active OPF Tasks
-${S.opf.filter(e=>e.status!=='done').map(e=>`[${e.priority}] ${e.task} — ${e.status}${e.dueDate?` due ${e.dueDate}`:''}`).join('\n') || 'None.'}
-
-## Active Creative Tasks
-${S.creative.filter(e=>e.status!=='done').map(e=>`[${e.project}] ${e.task} — ${e.status}`).join('\n') || 'None.'}
+## Active Tasks
+${S.todos.filter(e=>e.status!=='done').map(e=>`[${e.context||'?'}][${e.priority}] ${e.task} — ${e.status}${e.dueDate?` due ${e.dueDate}`:''}`).join('\n') || 'None.'}
 
 ## Calendar today
 ${S.calendar.map(ev=>`${ev.allDay?'All day':fmtTime(ev.start)} — ${ev.title}${ev.attendees.length?` (with ${ev.attendees.join(', ')})`:''}`).join('\n') || 'No events.'}
@@ -1052,7 +958,7 @@ async function processListPhoto(file) {
       reader.readAsDataURL(file);
     });
 
-    const fcitNames = S.fcit.map(e => e.name).filter(Boolean).join(', ');
+    const contactNames = S.contacts.map(e => e.name).filter(Boolean).join(', ');
 
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1071,18 +977,19 @@ async function processListPhoto(file) {
             { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
             { type: 'text', text: `Extract every to-do item from this handwritten list.
 
-Pipeline contacts (FCIT): ${fcitNames || 'none yet'}
-Creative projects: ${PROJECTS.join(', ')}
+Contacts (Homies): ${contactNames || 'none yet'}
+Task contexts: ${CONTEXTS_TODO.join(', ')}
 
 Return a JSON array, one object per item:
-[{"task":"string","category":"OPF|Creative","priority":"high|medium|low","project":"string","fcitMatch":"string"}]
+[{"task":"string","context":"FCIT|OPF|HRE|Creative","priority":"high|medium|low","contactMatch":"string"}]
 
 Rules:
-- category "Creative" = writing, storytelling, poetry, fiction. Match project to: ${PROJECTS.join(' / ')}
-- category "OPF" = everything else (ops, admin, finance, meetings, follow-ups, calls)
+- context "Creative" = writing, storytelling, poetry, fiction
+- context "FCIT" = finance, credit, industry, trade-related tasks
+- context "HRE" = HRE business-related tasks
+- context "OPF" = everything else (ops, admin, finance, meetings, follow-ups, calls)
 - priority: high if urgent/starred/underlined/circled, medium by default, low if vague/future
-- project: matching project name if Creative, else ""
-- fcitMatch: if task clearly names a pipeline contact, put their name; else ""
+- contactMatch: if task clearly names a contact, put their name; else ""
 - Return ONLY the JSON array, no other text` },
           ],
         }],
@@ -1118,7 +1025,7 @@ function showListReview(items) {
   const updateSaveBtn = () => {
     const saveBtn = document.getElementById('list-save');
     if (!saveBtn) return;
-    const skips = [...document.querySelectorAll('.list-cat-select')].filter(s => s.value === 'Skip').length;
+    const skips = [...document.querySelectorAll('[data-field="context"]')].filter(s => s.value === 'Skip').length;
     const saving = document.querySelectorAll('.list-review-item').length - skips;
     saveBtn.textContent = saving > 0 ? `Save ${saving} task${saving !== 1 ? 's' : ''}` : 'Nothing to save';
     saveBtn.disabled = saving === 0;
@@ -1135,12 +1042,8 @@ function showListReview(items) {
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
     </div>
   `, () => {
-    document.querySelectorAll('.list-cat-select').forEach(sel => {
-      sel.addEventListener('change', () => {
-        const item = sel.closest('.list-review-item');
-        item.querySelector('.list-project-select').style.display = sel.value === 'Creative' ? 'block' : 'none';
-        updateSaveBtn();
-      });
+    document.querySelectorAll('[data-field="context"]').forEach(sel => {
+      sel.addEventListener('change', updateSaveBtn);
     });
     document.querySelectorAll('.list-review-remove').forEach(btn => {
       btn.addEventListener('click', () => { btn.closest('.list-review-item').remove(); updateSaveBtn(); });
@@ -1150,30 +1053,22 @@ function showListReview(items) {
 }
 
 function listItemHTML(item) {
-  const isCreative = item.category === 'Creative';
-  const projectOptions = PROJECTS.map(p =>
-    `<option value="${escA(p)}"${item.project === p ? ' selected' : ''}>${esc(p)}</option>`
+  const ctxOptions = [...CONTEXTS_TODO, 'Skip'].map(c =>
+    `<option value="${c}"${item.context === c ? ' selected' : ''}>${c}</option>`
   ).join('');
   return `
     <div class="list-review-item">
       <div class="list-review-remove">✕</div>
       <input class="field-input" data-field="task" value="${escA(item.task)}" style="padding-right:38px;margin-bottom:8px">
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <select class="field-select list-cat-select" data-field="category" style="flex:1">
-          <option value="OPF"${!isCreative ? ' selected' : ''}>OPF</option>
-          <option value="Creative"${isCreative ? ' selected' : ''}>Creative</option>
-          <option value="Skip">Skip</option>
-        </select>
+        <select class="field-select" data-field="context" style="flex:1">${ctxOptions}</select>
         <select class="field-select" data-field="priority" style="flex:1">
           <option value="high"${item.priority === 'high' ? ' selected' : ''}>High</option>
           <option value="medium"${item.priority === 'medium' || !item.priority ? ' selected' : ''}>Medium</option>
           <option value="low"${item.priority === 'low' ? ' selected' : ''}>Low</option>
         </select>
       </div>
-      <select class="field-select list-project-select" data-field="project" style="display:${isCreative ? 'block' : 'none'};margin-bottom:8px">
-        ${projectOptions}
-      </select>
-      ${item.fcitMatch ? `<div class="list-fcit-badge">◈ Relates to ${esc(item.fcitMatch)} in your pipeline</div>` : ''}
+      ${item.contactMatch ? `<div class="list-fcit-badge">◈ Relates to ${esc(item.contactMatch)} in your contacts</div>` : ''}
     </div>`;
 }
 
@@ -1182,31 +1077,25 @@ async function saveListItems() {
   const saveBtn = document.getElementById('list-save');
   if (saveBtn) saveBtn.disabled = true;
 
-  const opfRows = [], creativeRows = [];
+  const rows = [];
   document.querySelectorAll('.list-review-item').forEach(el => {
     const task     = el.querySelector('[data-field="task"]')?.value?.trim();
-    const category = el.querySelector('[data-field="category"]')?.value;
+    const context  = el.querySelector('[data-field="context"]')?.value;
     const priority = el.querySelector('[data-field="priority"]')?.value || 'medium';
-    const project  = el.querySelector('[data-field="project"]')?.value || PROJECTS[0];
-    if (!task || category === 'Skip') return;
-    if (category === 'Creative') creativeRows.push([project, task, priority, '', 'todo', '']);
-    else opfRows.push([task, '', priority, '', 'todo', '']);
+    if (!task || context === 'Skip') return;
+    rows.push([task, '', priority, '', 'todo', context]);
   });
 
-  const total = opfRows.length + creativeRows.length;
-  if (!total) { closeModal(); return; }
+  if (!rows.length) { closeModal(); return; }
 
   try {
-    const saves = [];
-    if (opfRows.length)     saves.push(shAppend('OPF!A:F', opfRows));
-    if (creativeRows.length) saves.push(shAppend('Creative!A:F', creativeRows));
-    await Promise.all(saves);
-    await Promise.all([loadOPF(), loadCreative()]);
+    await shAppend('ToDo!A:F', rows);
+    await loadTodos();
     closeModal();
-    toast(`Saved ${total} task${total !== 1 ? 's' : ''}`);
+    toast(`Saved ${rows.length} task${rows.length !== 1 ? 's' : ''}`);
     renderView();
   } catch (err) {
-    toast('Save failed: ' + err.message);
+    if (err.message !== 'auth') toast('Save failed: ' + err.message);
     if (saveBtn) saveBtn.disabled = false;
   }
 }

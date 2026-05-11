@@ -474,18 +474,22 @@ nav {
 .dot-medium { background: var(--amber); }
 .dot-low    { background: var(--blue); }
 
-/* Project tag */
-.project-tag {
+/* Context tag */
+.context-tag {
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
+  padding: 2px 7px;
   border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--s3);
-  color: var(--t2);
-  margin-bottom: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
+.ct-fcit     { background: rgba(91,155,213,0.15);  color: var(--blue); }
+.ct-hre      { background: rgba(155,109,232,0.15); color: var(--purple); }
+.ct-opf      { background: rgba(76,175,130,0.15);  color: var(--green); }
+.ct-creative { background: rgba(232,168,90,0.15);  color: var(--amber); }
 
 /* ── Empty state ───────────────────────────────── */
 .empty {
