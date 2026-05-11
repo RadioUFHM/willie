@@ -880,7 +880,16 @@ a.email-row-link:hover { background: rgba(255,255,255,0.03); border-radius: 6px;
 .chat-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 14px;
+}
+.chat-key-reset {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  opacity: 0.5;
+  padding: 4px;
 }
 .chat-title {
   font-size: 20px;

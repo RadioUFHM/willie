@@ -863,7 +863,7 @@ async function openWillieChat() {
 
   showModal(`
     <div class="modal-handle"></div>
-    <div class="chat-header"><div class="chat-title">✦ Willie</div></div>
+    <div class="chat-header"><div class="chat-title">✦ Willie</div><button class="chat-key-reset" id="chat-key-reset" title="Reset API key">🔑</button></div>
     <div class="chat-messages" id="chat-msgs">
       ${introHTML}${S.chatHistory.map(chatMsgHTML).join('')}
     </div>
@@ -885,6 +885,11 @@ async function openWillieChat() {
     });
     document.getElementById('chat-send').addEventListener('click', sendWillieMessage);
     document.getElementById('chat-vb').addEventListener('click', () => voice('chat-input', 'chat-vb'));
+    document.getElementById('chat-key-reset').addEventListener('click', () => {
+      localStorage.removeItem('willie_anthropic_key');
+      closeModal();
+      toast('API key cleared — reopen Willie to enter a new one');
+    });
     scrollChatToBottom();
   });
 }
