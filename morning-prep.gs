@@ -12,7 +12,7 @@ function runMorningPrep() {
     const emails  = getRecentEmails();
     const events  = getTodaysEvents();
     const fcit    = getFCITPipeline();
-    const opf     = getActiveTasks('OPF',      ['task','category','priority','dueDate','status','notes']);
+    const opf     = getActiveTasks('ToDo',     ['task','category','priority','dueDate','status','notes']);
     const creative = getActiveTasks('Creative', ['project','task','priority','dueDate','status','notes']);
 
     const brief = analyzeWithGemini(emails, events, fcit, opf, creative);
@@ -68,7 +68,7 @@ function getTodaysEvents() {
 // ── Sheets ────────────────────────────────────────────────────────────────────
 function getFCITPipeline() {
   const rows = SpreadsheetApp.openById(SHEET_ID)
-    .getSheetByName('FCIT').getDataRange().getValues().slice(1);
+    .getSheetByName('Homies').getDataRange().getValues().slice(1);
   return rows.filter(r => r[0]).map(r => ({
     name: r[0], org: r[1], stage: r[2],
     lastContact: r[3] ? Utilities.formatDate(new Date(r[3]), 'UTC', 'yyyy-MM-dd') : '',
