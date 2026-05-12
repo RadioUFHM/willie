@@ -67,8 +67,9 @@ function getTodaysEvents() {
 
 // ── Sheets ────────────────────────────────────────────────────────────────────
 function getFCITPipeline() {
-  const rows = SpreadsheetApp.openById(SHEET_ID)
-    .getSheetByName('Homies').getDataRange().getValues().slice(1);
+  const sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName('Homies');
+  if (!sheet) return [];
+  const rows = sheet.getDataRange().getValues().slice(1);
   return rows.filter(r => r[0]).map(r => ({
     name: r[0], org: r[1], stage: r[2],
     lastContact: r[3] ? Utilities.formatDate(new Date(r[3]), 'UTC', 'yyyy-MM-dd') : '',
@@ -79,8 +80,9 @@ function getFCITPipeline() {
 }
 
 function getActiveTasks(tabName, fields) {
-  const rows = SpreadsheetApp.openById(SHEET_ID)
-    .getSheetByName(tabName).getDataRange().getValues().slice(1);
+  const sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(tabName);
+  if (!sheet) return [];
+  const rows = sheet.getDataRange().getValues().slice(1);
   return rows
     .filter(r => r[0] && r[fields.indexOf('status')] !== 'done')
     .map(r => Object.fromEntries(fields.map((f, i) => [f, r[i] || ''])));
