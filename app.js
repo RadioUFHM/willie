@@ -1,8 +1,24 @@
-const CONTEXTS_TODO    = ['FCIT', 'OPF', 'HRE', 'Creative'];
-const CONTEXTS_CONTACT = ['FCIT', 'HRE', 'OPF'];
-const STAGES           = ['prospect', 'warm', 'proposal', 'closed'];
-const PRIORITIES       = ['high', 'medium', 'low'];
-const STATUSES         = ['todo', 'in-progress', 'done', 'blocked'];
+const CONTEXTS_TODO = ['FCIT', 'OPF', 'HRE', 'Creative'];
+const PRIORITIES    = ['high', 'medium', 'low'];
+const STATUSES      = ['todo', 'in-progress', 'done', 'blocked'];
+
+// HubSpot column headers — must match row 1 of HubSpotContacts tab exactly
+const HS_COL = {
+  recordId:    'Record ID',
+  firstName:   'First Name',
+  lastName:    'Last Name',
+  company:     'Company Name',
+  jobTitle:    'Job Title',
+  email:       'Email',
+  phone:       'Phone Number',
+  linkedin:    'LinkedIn URL',
+  persona:     'Persona',
+  leadStatus:  'Lead Status',
+  lastActivity:'Last Activity Date',
+  nextActivity:'Next Activity Date',
+};
+
+const HS_CLOSED_STAGES = new Set(['unqualified', 'bad timing']);
 
 const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
@@ -48,6 +64,45 @@ function dueStat(d) {
   if (d < t) return 'overdue';
   if (d === t) return 'today';
   return '';
+}
+
+// ── HubSpot helpers ───────────────────────────────────────────────────────────
+function parseHSDate(s) {
+  if (!s) return '';
+  if (s.includes('T')) return s.split('T')[0];
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return '';
+}
+
+function leadStatusClass(s) {
+  switch ((s || '').toLowerCase().trim()) {
+    case 'new':                  return 'badge badge-ls-new';
+    case 'open':                 return 'badge badge-ls-open';
+    case 'in progress':          return 'badge badge-ls-progress';
+    case 'open deal':            return 'badge badge-ls-deal';
+    case 'attempted to contact': return 'badge badge-ls-attempt';
+    case 'connected':            return 'badge badge-ls-connected';
+    case 'bad timing':           return 'badge badge-ls-timing';
+    case 'unqualified':          return 'badge badge-ls-unqualified';
+    default:                     return 'badge badge-ls-default';
+  }
+}
+
+const PERSONA_COLORS = [
+  ['rgba(91,155,213,0.15)',  'var(--blue)'],
+  ['rgba(155,109,232,0.15)', 'var(--purple)'],
+  ['rgba(76,175,130,0.15)',  'var(--green)'],
+  ['rgba(232,168,90,0.15)',  'var(--amber)'],
+  ['rgba(201,169,110,0.14)', 'var(--accent)'],
+];
+
+function personaStyle(p) {
+  if (!p) return '';
+  let h = 0;
+  for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) & 0xffff;
+  const [bg, color] = PERSONA_COLORS[h % PERSONA_COLORS.length];
+  return `background:${bg};color:${color}`;
 }
 
 function greeting() {
@@ -244,16 +299,49 @@ async function loadPrecomputedBrief() {
 }
 
 // ── Sheet loaders ─────────────────────────────────────────────────────────────
-// Homies sheet: A:Name B:Org C:Stage D:LastContact E:NextAction F:DueDate G:Notes H:Context I:HubSpotURL
+// HubSpotContacts tab: row 1 = headers matching HS_COL values; data from row 2
 async function loadContacts() {
+  S.filter.contacts = 'all';
   try {
-    const d = await shGet('Homies!A1:I500');
-    S.contacts = (d.values || []).slice(1).map((r, i) => ({
-      ri: i + 2, name: r[0]||'', org: r[1]||'', stage: (r[2]||'prospect').toLowerCase(),
-      lastContact: r[3]||'', nextAction: r[4]||'', dueDate: r[5]||'', notes: r[6]||'',
-      context: r[7]||'', hubspotUrl: r[8]||'',
-    })).filter(e => e.name);
-  } catch (e) { console.error('Contacts:', e); }
+    const d = await shGet('HubSpotContacts!A1:Z5000');
+    const rows = d.values || [];
+    if (rows.length < 2) { S.contacts = []; return; }
+    const headers = rows[0];
+    const idx = name => headers.indexOf(name);
+    const C = Object.fromEntries(Object.entries(HS_COL).map(([k, name]) => [k, idx(name)]));
+    S.contacts = rows.slice(1).map(r => {
+      const recordId = (r[C.recordId] || '').trim();
+      if (!recordId) return null;
+      return {
+        recordId,
+        name: [r[C.firstName]||'', r[C.lastName]||''].filter(Boolean).join(' ') || recordId,
+        org:        r[C.company]      || '',
+        jobTitle:   r[C.jobTitle]     || '',
+        email:      r[C.email]        || '',
+        phone:      r[C.phone]        || '',
+        linkedin:   r[C.linkedin]     || '',
+        context:    r[C.persona]      || '',
+        stage:      r[C.leadStatus]   || '',
+        lastContact: parseHSDate(r[C.lastActivity]),
+        dueDate:    parseHSDate(r[C.nextActivity]),
+        notes:      '',
+        annotRow:   null,
+        hubspotUrl: CONFIG.HUBSPOT_PORTAL_ID
+          ? `https://app.hubspot.com/contacts/${CONFIG.HUBSPOT_PORTAL_ID}/contact/${recordId}`
+          : '',
+      };
+    }).filter(Boolean);
+    // Merge Willie annotations
+    try {
+      const ad = await shGet('WillieAnnotations!A:B');
+      const arows = (ad.values || []).slice(1);
+      const amap = new Map(arows.map((r, i) => [(r[0]||'').trim().toLowerCase(), { notes: r[1]||'', row: i+2 }]));
+      S.contacts.forEach(c => {
+        const ann = amap.get((c.email||'').toLowerCase());
+        if (ann) { c.notes = ann.notes; c.annotRow = ann.row; }
+      });
+    } catch { /* WillieAnnotations tab may not exist yet */ }
+  } catch (e) { console.error('Contacts:', e); S.contacts = []; }
 }
 
 // ToDo sheet: A:Task B:Category(ignored) C:Priority D:DueDate E:Status F:Context
@@ -267,13 +355,24 @@ async function loadTodos() {
   } catch (e) { console.error('ToDo:', e); }
 }
 
-// ── Saves / Deletes ───────────────────────────────────────────────────────────
-async function saveContact(e, isNew) {
-  const row = [e.name, e.org, e.stage, e.lastContact, e.nextAction, e.dueDate, e.notes, e.context, e.hubspotUrl];
-  if (isNew) await shAppend('Homies!A:I', [row]); else await shPut(`Homies!A${e.ri}:I${e.ri}`, [row]);
-  await loadContacts();
+// ── Saves ─────────────────────────────────────────────────────────────────────
+// Upsert a Willie annotation (notes) for a contact, keyed by HubSpot Record ID
+async function saveAnnotation(email, notes) {
+  const key = email.toLowerCase();
+  const d = await shGet('WillieAnnotations!A:B');
+  const rows = d.values || [];
+  let targetRow = -1;
+  for (let i = 1; i < rows.length; i++) {
+    if ((rows[i][0]||'').trim().toLowerCase() === key) { targetRow = i + 1; break; }
+  }
+  if (targetRow > 0) {
+    await shPut(`WillieAnnotations!A${targetRow}:B${targetRow}`, [[email, notes]]);
+  } else {
+    await shAppend('WillieAnnotations!A:B', [[email, notes]]);
+  }
+  const c = S.contacts.find(c => (c.email||'').toLowerCase() === key);
+  if (c) c.notes = notes;
 }
-async function delContact(e) { await shClear(`Homies!A${e.ri}:I${e.ri}`); await loadContacts(); }
 
 async function saveTodo(e, isNew) {
   const row = [e.task, '', e.priority, e.dueDate, e.status, e.context];
@@ -350,7 +449,7 @@ function renderView() {
 // ── Home / Brief ──────────────────────────────────────────────────────────────
 function homeHTML() {
   const followUps  = S.contacts
-    .filter(e => e.dueDate && e.dueDate <= todays() && e.stage !== 'closed')
+    .filter(e => e.dueDate && e.dueDate <= todays() && !HS_CLOSED_STAGES.has((e.stage||'').toLowerCase()))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const todosActive = S.todos.filter(e => e.status !== 'done').length;
   const emailCount  = S.gmail.unread.length + S.gmail.starred.length + S.gmail.pipeline.length;
@@ -426,14 +525,13 @@ function homeHTML() {
       ${followUps.length === 0
         ? `<div class="dim-note">${S.token ? 'Clear board.' : 'Connect Google to see your queue.'}</div>`
         : followUps.map(e => `
-          <div class="followup-card" data-contact-row="${e.ri}">
+          <div class="followup-card" data-contact-rid="${escA(e.recordId)}">
             <div class="followup-name">${esc(e.name)}</div>
             <div class="followup-org">
               ${esc(e.org)}
-              ${e.context ? `<span class="context-tag ct-${e.context.toLowerCase()}">${esc(e.context)}</span>` : ''}
-              ${e.stage ? `<span class="badge badge-${e.stage}">${e.stage}</span>` : ''}
+              ${e.context ? `<span class="context-tag" style="${escA(personaStyle(e.context))}">${esc(e.context)}</span>` : ''}
+              ${e.stage ? `<span class="${leadStatusClass(e.stage)}">${esc(e.stage)}</span>` : ''}
             </div>
-            ${e.nextAction ? `<div class="followup-action">${esc(e.nextAction)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ Overdue · ':dueStat(e.dueDate)==='today'?'◈ Today · ':''}${fmtDate(e.dueDate)}</div>` : ''}
           </div>`).join('')}
     </div>
@@ -492,44 +590,45 @@ function newsHTML() {
 function homiesHTML() {
   const f = S.filter.contacts;
   const t = todays();
-  const stagePri = {proposal:0, warm:1, prospect:2, closed:3};
+  const personas = ['all', ...new Set(S.contacts.map(e => e.context).filter(Boolean))].sort();
   const items = S.contacts
     .filter(e => f === 'all' || e.context === f)
     .sort((a, b) => {
       const aUrgent = a.dueDate && a.dueDate <= t ? 0 : 1;
       const bUrgent = b.dueDate && b.dueDate <= t ? 0 : 1;
       if (aUrgent !== bUrgent) return aUrgent - bUrgent;
-      return (stagePri[a.stage]??4) - (stagePri[b.stage]??4);
+      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return a.name.localeCompare(b.name);
     });
   return `
     <div class="page-header">
       <div class="page-title">Homies</div>
-      <button class="btn-icon" id="add-contact">+</button>
     </div>
     ${!S.token ? authBanner() : ''}
     <div class="filters">
-      ${['all', ...CONTEXTS_CONTACT].map(s =>
-        `<button class="filter-chip${f===s?' active':''}" data-lane="contacts" data-val="${s}">${s==='all'?'All':s}</button>`
+      ${personas.map(s =>
+        `<button class="filter-chip${f===s?' active':''}" data-lane="contacts" data-val="${escA(s)}">${s==='all'?'All':esc(s)}</button>`
       ).join('')}
     </div>
     <div class="list-items">
       ${items.length === 0
-        ? `<div class="empty">${S.token ? 'No contacts yet.<br>Tap + to add one.' : 'Connect Google to load contacts.'}</div>`
+        ? `<div class="empty">${S.token ? 'No contacts.<br>Paste your HubSpot export into the HubSpotContacts tab.' : 'Connect Google to load contacts.'}</div>`
         : items.map(e => `
-          <div class="card" data-row="${e.ri}">
+          <div class="card" data-record-id="${escA(e.recordId)}">
             <div class="card-row">
               <div class="card-name">${esc(e.name)}</div>
-              <span class="badge badge-${e.stage}">${e.stage}</span>
+              ${e.stage ? `<span class="${leadStatusClass(e.stage)}">${esc(e.stage)}</span>` : ''}
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px">
-              ${e.context ? `<span class="context-tag ct-${e.context.toLowerCase()}">${esc(e.context)}</span>` : ''}
+              ${e.context ? `<span class="context-tag" style="${escA(personaStyle(e.context))}">${esc(e.context)}</span>` : ''}
               ${e.org ? `<span class="card-sub" style="margin:0">${esc(e.org)}</span>` : ''}
+              ${e.jobTitle ? `<span class="card-sub" style="margin:0;color:var(--t3)">${esc(e.jobTitle)}</span>` : ''}
             </div>
-            ${e.nextAction ? `<div class="card-action">${esc(e.nextAction)}</div>` : ''}
             ${e.dueDate ? `<div class="card-due ${dueStat(e.dueDate)}">${dueStat(e.dueDate)==='overdue'?'⚠ ':dueStat(e.dueDate)==='today'?'◈ ':''}${fmtDate(e.dueDate)}</div>` : ''}
-            ${(e.stage !== 'closed' || e.hubspotUrl) ? `<div class="card-quick">
-              ${e.stage !== 'closed' ? `<button class="quick-btn" data-contacted="${e.ri}">✓ Contacted</button>` : ''}
-              ${e.hubspotUrl ? `<a class="quick-btn hs-link" href="${escA(e.hubspotUrl)}" target="_blank" rel="noopener">HubSpot ↗</a>` : ''}
+            ${e.hubspotUrl ? `<div class="card-quick">
+              <a class="quick-btn hs-link" href="${escA(e.hubspotUrl)}" target="_blank" rel="noopener">HubSpot ↗</a>
             </div>` : ''}
           </div>`).join('')}
     </div>`;
@@ -582,8 +681,6 @@ function todosHTML() {
 
 // ── Event binding ─────────────────────────────────────────────────────────────
 function bindViewEvents() {
-  const v = S.view;
-
   document.querySelectorAll('.filter-chip').forEach(btn => {
     btn.addEventListener('click', () => {
       S.filter[btn.dataset.lane] = btn.dataset.val;
@@ -591,29 +688,28 @@ function bindViewEvents() {
     });
   });
 
+  document.querySelectorAll('.card[data-record-id]').forEach(card => {
+    card.addEventListener('click', () => openContact(card.dataset.recordId));
+  });
+
   document.querySelectorAll('.card[data-row]').forEach(card => {
     const ri = parseInt(card.dataset.row, 10);
-    card.addEventListener('click', () => {
-      if (v === 'homies')     openContact(ri);
-      else if (v === 'todos') openTodo(ri);
-    });
+    card.addEventListener('click', () => openTodo(ri));
   });
 
   document.querySelectorAll('.hs-link').forEach(link => {
     link.addEventListener('click', e => e.stopPropagation());
   });
 
-  document.querySelectorAll('.followup-card[data-contact-row]').forEach(card => {
-    const ri = parseInt(card.dataset.contactRow, 10);
-    card.addEventListener('click', () => { navigate('homies'); setTimeout(() => openContact(ri), 60); });
+  document.querySelectorAll('.followup-card[data-contact-rid]').forEach(card => {
+    const rid = card.dataset.contactRid;
+    card.addEventListener('click', () => { navigate('homies'); setTimeout(() => openContact(rid), 60); });
   });
 
   document.querySelectorAll('.stat-chip[data-nav]').forEach(chip => {
     chip.addEventListener('click', () => navigate(chip.dataset.nav));
   });
 
-  const addContact = document.getElementById('add-contact');
-  if (addContact) addContact.addEventListener('click', () => openContact(null));
   const addTodo = document.getElementById('add-todo');
   if (addTodo) addTodo.addEventListener('click', () => openTodo(null));
 
@@ -623,14 +719,6 @@ function bindViewEvents() {
   if (scanBtn) scanBtn.addEventListener('click', captureList);
   const wb = document.getElementById('wb');
   if (wb) wb.addEventListener('click', openWillieChat);
-
-  document.querySelectorAll('[data-contacted]').forEach(btn => {
-    btn.addEventListener('click', async ev => {
-      ev.stopPropagation();
-      const ri = parseInt(btn.dataset.contacted, 10);
-      await markContacted(ri);
-    });
-  });
 
   document.querySelectorAll('[data-done-row]').forEach(btn => {
     btn.addEventListener('click', async ev => {
@@ -642,14 +730,6 @@ function bindViewEvents() {
 }
 
 // ── Quick actions ─────────────────────────────────────────────────────────────
-async function markContacted(ri) {
-  const e = S.contacts.find(x => x.ri === ri);
-  if (!e) return;
-  if (!S.token) { toast('Connect Google to save'); return; }
-  try { await saveContact({...e, lastContact: todays()}, false); renderView(); toast('Marked contacted'); }
-  catch (err) { if (err.message !== 'auth') toast('Failed: ' + err.message); }
-}
-
 async function markTaskDone(ri) {
   if (!S.token) { toast('Connect Google to save'); return; }
   try {
@@ -693,55 +773,50 @@ function notesField(val) {
   </div>`;
 }
 
-function openContact(ri) {
-  const entry = ri ? S.contacts.find(e => e.ri === ri) : null;
-  const isNew = !entry;
-  const e = entry || { ri:null, name:'', org:'', stage:'prospect', lastContact:'', nextAction:'', dueDate:'', notes:'', context:'FCIT', hubspotUrl:'' };
+function openContact(recordId) {
+  const e = S.contacts.find(c => c.recordId === recordId);
+  if (!e) return;
+  const dueCls = dueStat(e.dueDate);
+  const infoRow = (label, val) => val
+    ? `<div class="contact-info-row"><span class="contact-info-label">${label}</span><span>${esc(val)}</span></div>`
+    : '';
   showModal(`
     <div class="modal-handle"></div>
-    <div class="modal-title">${isNew ? 'Add Contact' : 'Edit Contact'}</div>
-    <div class="field"><label class="field-label">Name</label>
-      <input class="field-input" id="fi-name" type="text" value="${escA(e.name)}" placeholder="Full name" autocomplete="name"></div>
-    <div class="field"><label class="field-label">Organization</label>
-      <input class="field-input" id="fi-org" type="text" value="${escA(e.org)}" placeholder="Company or org"></div>
-    <div class="field"><label class="field-label">Context</label>
-      <select class="field-select" id="fi-context">
-        ${CONTEXTS_CONTACT.map(c => `<option value="${c}"${e.context===c?' selected':''}>${c}</option>`).join('')}
-      </select></div>
-    <div class="field"><label class="field-label">Stage</label>
-      <select class="field-select" id="fi-stage">
-        ${STAGES.map(s => `<option value="${s}"${e.stage===s?' selected':''}>${cap(s)}</option>`).join('')}
-      </select></div>
-    <div class="field"><label class="field-label">Last Contact</label>
-      <input class="field-input" id="fi-last" type="date" value="${escA(e.lastContact)}"></div>
-    <div class="field"><label class="field-label">Next Action</label>
-      <input class="field-input" id="fi-action" type="text" value="${escA(e.nextAction)}" placeholder="What needs to happen"></div>
-    <div class="field"><label class="field-label">Due Date</label>
-      <input class="field-input" id="fi-due" type="date" value="${escA(e.dueDate)}"></div>
+    <div class="contact-detail-header">
+      <div class="contact-detail-name">${esc(e.name)}</div>
+      <div class="contact-detail-meta">
+        ${e.context ? `<span class="context-tag" style="${escA(personaStyle(e.context))}">${esc(e.context)}</span>` : ''}
+        ${e.stage ? `<span class="${leadStatusClass(e.stage)}">${esc(e.stage)}</span>` : ''}
+      </div>
+    </div>
+    ${(e.org || e.jobTitle) ? `<div class="contact-info-block">
+      ${infoRow('Company', e.org)}
+      ${infoRow('Title', e.jobTitle)}
+    </div>` : ''}
+    <div class="contact-info-block">
+      ${e.email    ? `<div class="contact-info-row"><span class="contact-info-label">Email</span><a class="contact-info-link" href="mailto:${escA(e.email)}">${esc(e.email)}</a></div>` : ''}
+      ${e.phone    ? `<div class="contact-info-row"><span class="contact-info-label">Phone</span><a class="contact-info-link" href="tel:${escA(e.phone)}">${esc(e.phone)}</a></div>` : ''}
+      ${e.linkedin ? `<div class="contact-info-row"><span class="contact-info-label">LinkedIn</span><a class="contact-info-link" href="${escA(e.linkedin)}" target="_blank" rel="noopener">View ↗</a></div>` : ''}
+    </div>
+    <div class="contact-info-block">
+      ${e.lastContact ? `<div class="contact-info-row"><span class="contact-info-label">Last Activity</span><span>${fmtDate(e.lastContact)}</span></div>` : ''}
+      ${e.dueDate     ? `<div class="contact-info-row"><span class="contact-info-label">Next Activity</span><span class="${dueCls}">${dueCls==='overdue'?'⚠ ':dueCls==='today'?'◈ ':''}${fmtDate(e.dueDate)}</span></div>` : ''}
+    </div>
     ${notesField(e.notes)}
-    <div class="field"><label class="field-label">HubSpot URL</label>
-      <input class="field-input" id="fi-hubspot" type="url" value="${escA(e.hubspotUrl)}" placeholder="https://app.hubspot.com/contacts/..."></div>
-    ${formActions(isNew)}
+    <div class="form-actions">
+      <button class="btn-save" id="f-save">Save Notes</button>
+      <button class="btn-cancel" onclick="closeModal()">Done</button>
+    </div>
+    ${e.hubspotUrl ? `<a class="contact-hs-link" href="${escA(e.hubspotUrl)}" target="_blank" rel="noopener">Open in HubSpot ↗</a>` : ''}
   `, () => {
     document.getElementById('vb').addEventListener('click', () => voice('fi-notes', 'vb'));
     document.getElementById('f-save').addEventListener('click', async () => {
-      const data = { ri:e.ri, name:v('fi-name'), org:v('fi-org'), context:v('fi-context'),
-        stage:v('fi-stage'), lastContact:v('fi-last'), nextAction:v('fi-action'),
-        dueDate:v('fi-due'), notes:v('fi-notes'), hubspotUrl:v('fi-hubspot') };
-      if (!data.name) { toast('Name is required'); return; }
+      const notes = v('fi-notes');
       closeModal();
       if (!S.token) { toast('Connect Google to save'); return; }
-      try { await saveContact(data, isNew); renderView(); toast('Saved'); }
+      try { await saveAnnotation(e.email, notes); renderView(); toast('Notes saved'); }
       catch (err) { if (err.message !== 'auth') toast('Save failed: ' + err.message); }
     });
-    if (!isNew) {
-      document.getElementById('f-del').addEventListener('click', async () => {
-        if (!confirm('Delete this contact?')) return;
-        closeModal();
-        try { await delContact(e); renderView(); toast('Deleted'); }
-        catch (err) { if (err.message !== 'auth') toast('Delete failed: ' + err.message); }
-      });
-    }
   });
 }
 
@@ -852,7 +927,7 @@ async function openWillieChat() {
 
   if (!S.chatIntro) {
     const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 999;
-    const stale = S.contacts.filter(e => e.stage !== 'closed' && daysSince(e.lastContact) >= 7);
+    const stale = S.contacts.filter(e => !HS_CLOSED_STAGES.has((e.stage||'').toLowerCase()) && daysSince(e.lastContact) >= 7);
     const due   = S.todos.filter(e => e.status !== 'done' && e.dueDate && e.dueDate <= todays()).length;
     S.chatIntro = S.briefData
       ? `Good ${greeting().split(' ')[1].toLowerCase()}, Rio. Brief is ready — ${S.briefData.calendar?.length || 0} calendar item${S.briefData.calendar?.length !== 1 ? 's' : ''}, ${S.briefData.email?.length || 0} email${S.briefData.email?.length !== 1 ? 's' : ''} worth your attention${due ? `, ${due} task${due !== 1 ? 's' : ''} due today` : ''}${stale.length ? `, ${stale.length} stale contact${stale.length !== 1 ? 's' : ''}` : ''}. What do you want to dig into?`
@@ -970,7 +1045,7 @@ Email: ${JSON.stringify(S.briefData.email || [])}
 Actions: ${JSON.stringify(S.briefData.actions || [])}
 BD move: ${JSON.stringify(S.briefData.bd || {})}
 ` : ''}## Contacts (Homies)
-${S.contacts.map(e => `${e.name} [${e.context||'?'}] (${e.org}) [${e.stage}] last: ${e.lastContact||'never'} (${daysSince(e.lastContact)}d) next: ${e.nextAction||'—'}`).join('\n') || 'Empty.'}
+${S.contacts.map(e => `${e.name} [${e.context||'?'}] (${e.org}${e.jobTitle?', '+e.jobTitle:''}) [${e.stage||'?'}] last: ${e.lastContact||'never'} (${daysSince(e.lastContact)}d) next: ${e.dueDate||'—'}`).join('\n') || 'Empty.'}
 
 ## Active Tasks
 ${S.todos.filter(e=>e.status!=='done').map(e=>`[${e.context||'?'}][${e.priority}] ${e.task} — ${e.status}${e.dueDate?` due ${e.dueDate}`:''}`).join('\n') || 'None.'}
