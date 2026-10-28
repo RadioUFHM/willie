@@ -46,7 +46,8 @@ const S = {
 };
 
 // ── Date/Time ─────────────────────────────────────────────────────────────────
-function todays() { return new Date().toISOString().split('T')[0]; }
+// Local date as YYYY-MM-DD (toISOString is UTC, which rolls over to tomorrow in the Pacific evening)
+function todays() { return new Date().toLocaleDateString('en-CA'); }
 
 function fmtDate(d) {
   if (!d) return '';
